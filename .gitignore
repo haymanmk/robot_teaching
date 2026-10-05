@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+
+# Programs recorded on the robot are user data; keep the example only.
+programs/*.json
+!programs/example_pick_place.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

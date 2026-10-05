@@ -1,0 +1,67 @@
+# robot_teaching configuration (reBot Arm B601-RS).
+#
+# Motor ids, CAN channel, MIT gains and the gravity-compensation profiles live in
+# the upstream hardware file third_party/reBotArm_control_py/config/rebotarm_rs.yaml.
+# This file only holds what the teaching application adds on top.
+
+control:
+  rate: 500               # Hz, MIT setpoint streaming rate (upstream default)
+  state_stream_rate: 30   # Hz, WebSocket state updates to the UI
+
+limits:
+  # Playback limits at speed scale 1.0. Deliberately conservative; the URDF's
+  # nominal 40-50 rad/s is a motor figure, not a safe arm speed. Scalar or one
+  # value per arm joint.
+  joint_velocity: [1.0, 1.0, 1.0, 1.5, 1.5, 2.0]        # rad/s
+  joint_acceleration: [2.0, 2.0, 2.0, 3.0, 3.0, 4.0]    # rad/s^2
+  cartesian_linear_velocity: 0.15        # m/s
+  cartesian_linear_acceleration: 0.30    # m/s^2
+  cartesian_angular_velocity: 0.8        # rad/s
+  cartesian_angular_acceleration: 2.0    # rad/s^2
+  joint_position_margin: 0.02            # rad kept inside the URDF joint limits
+  planning_dt: 0.01                      # s, planner sample spacing (interpolated at control rate)
+
+free_drive:
+  # Gravity-compensated impedance mode used for drag teaching. Values follow the
+  # upstream "velocity_lock" profile validated on the RS build.
+  kp: 8.0
+  kd: 1.0
+  ki: 1.0
+  integral_limit: 0.3
+  tau_scale: [1.0, 0.98, 0.98, 1.0, 1.0, 1.0]
+  transition_duration: 0.5               # s, gain fade between stiff hold and compliant
+  linear_release_threshold: 0.04         # m/s, EE speed above which the lock releases
+  angular_release_threshold: 0.08        # rad/s
+  linear_lock_threshold: 0.02            # m/s, EE speed below which the lock re-engages
+  angular_lock_threshold: 0.04           # rad/s
+  lock_settle_duration: 0.15             # s of quiet before re-locking
+  velocity_filter_time_constant: 0.03    # s, low-pass on finite-difference joint velocity
+  max_valid_sample_dt: 0.1               # s, longer gaps reset the velocity estimate
+
+hold:
+  # Stiff gains for HOLD / jog / playback. null = per-joint MIT gains from the
+  # upstream hardware YAML.
+  kp: null
+  kd: null
+
+jog:
+  joint_steps_deg: [0.5, 1.0, 5.0]
+  cartesian_steps_m: [0.001, 0.005, 0.02]
+  cartesian_steps_deg: [0.5, 2.0, 5.0]
+  joint_velocity: 0.5          # rad/s, speed at which the hold target moves to a jogged goal
+  max_ik_joint_jump: 0.5       # rad, a Cartesian jog whose IK solution moves any joint more is rejected
+
+gripper:
+  # Motor positions (rad) of the gripper joint. 0.0 is the zero set by the upstream
+  # zero-calibration example; the open position must be calibrated on your arm.
+  closed_position: 0.0
+  open_position: 5.0
+  settle_time: 0.6             # s inserted into playback when the gripper target changes
+  kp: null                     # null = upstream MIT gains for the gripper group
+  kd: null
+
+playback:
+  default_speed: 0.5           # initial speed scale (0..1]
+  dwell_default: 0.0           # s
+
+programs_dir: programs

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reBot Arm Teach Pendant</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="ws-dot" title="connection"></span>
+    <h1>reBot Arm <span class="muted">Teach Pendant</span></h1>
+    <span class="badge" id="mode-badge">—</span>
+    <span class="badge sub" id="fd-status"></span>
+  </div>
+  <div class="actions">
+    <button id="btn-free" class="btn big amber">Free drive</button>
+    <button id="btn-hold" class="btn big green">Hold</button>
+    <button id="btn-stop" class="btn big">Stop motion</button>
+    <button id="btn-enable" class="btn big blue hidden">Enable motors</button>
+    <button id="btn-estop" class="btn big red">E-STOP</button>
+  </div>
+</header>
+
+<div id="error-banner" class="banner hidden"></div>
+<div id="toast" class="toast hidden"></div>
+
+<main class="grid">
+  <!-- ───────────── column 1: state + jog ───────────── -->
+  <section class="card">
+    <h2>Robot state</h2>
+    <table class="joints" id="joint-table">
+      <thead><tr><th>Joint</th><th>Angle</th><th>Target</th><th>Vel</th><th>g(q)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="pose">
+      <div><span class="k">X</span><span id="pose-x">—</span><span class="u">mm</span></div>
+      <div><span class="k">Y</span><span id="pose-y">—</span><span class="u">mm</span></div>
+      <div><span class="k">Z</span><span id="pose-z">—</span><span class="u">mm</span></div>
+      <div><span class="k">Roll</span><span id="pose-r">—</span><span class="u">°</span></div>
+      <div><span class="k">Pitch</span><span id="pose-p">—</span><span class="u">°</span></div>
+      <div><span class="k">Yaw</span><span id="pose-w">—</span><span class="u">°</span></div>
+    </div>
+    <div class="kv">
+      <span>EE speed <b id="ee-speed">—</b></span>
+      <span>Gripper <b id="gripper-pos">—</b> → <b id="gripper-target">—</b> rad</span>
+      <span>Loop <b id="tick-dt">—</b></span>
+    </div>
+  </section>
+
+  <section class="card" id="jog-card">
+    <h2>Fine adjustment <span class="muted small">(hold mode)</span></h2>
+    <div class="row">
+      <label>Joint step</label>
+      <div class="seg" id="joint-step"></div>
+    </div>
+    <div class="jog-grid" id="joint-jog"></div>
+
+    <div class="row">
+      <label>Cartesian step</label>
+      <div class="seg" id="cart-step-lin"></div>
+      <div class="seg" id="cart-step-ang"></div>
+      <div class="seg" id="cart-frame">
+        <button data-frame="base" class="on">Base</button>
+        <button data-frame="tool">Tool</button>
+      </div>
+    </div>
+    <div class="jog-grid" id="cart-jog"></div>
+
+    <h3>Gripper</h3>
+    <div class="row gripper-row">
+      <button class="btn" id="btn-grip-open">Open</button>
+      <input type="range" id="grip-slider" min="0" max="1" step="0.01" value="0">
+      <button class="btn" id="btn-grip-close">Close</button>
+      <span class="small muted" id="grip-slider-val"></span>
+    </div>
+  </section>
+
+  <!-- ───────────── column 2: program ───────────── -->
+  <section class="card wide">
+    <div class="card-head">
+      <h2>Program <input id="prog-name" class="inline" value="untitled"> <span id="prog-dirty" class="muted small"></span></h2>
+      <div class="file-actions">
+        <button class="btn" id="btn-new">New</button>
+        <button class="btn" id="btn-save">Save</button>
+        <select id="prog-list"><option value="">Load…</option></select>
+        <button class="btn" id="btn-delete-file" title="delete the selected saved program">Delete file</button>
+      </div>
+    </div>
+
+    <div class="record-bar">
+      <button class="btn big blue" id="btn-record">● Record point</button>
+      <label>Motion
+        <select id="rec-motion"><option value="joint">Joint</option><option value="linear">Linear</option></select>
+      </label>
+      <label>Speed <input type="number" id="rec-speed" min="5" max="100" step="5" value="50"> %</label>
+      <label><input type="checkbox" id="rec-blend"> Blend (pass through)</label>
+      <label>Dwell <input type="number" id="rec-dwell" min="0" step="0.1" value="0"> s</label>
+    </div>
+
+    <table class="points" id="points-table">
+      <thead>
+        <tr><th>#</th><th>Name</th><th>Motion</th><th>Speed %</th><th>Blend</th><th>Dwell s</th><th>Gripper</th><th>Pose (mm)</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div id="prog-problems" class="problems hidden"></div>
+    <p class="hint">Record in <b>free drive</b> by dragging the arm, or in <b>hold</b> after fine adjustment. A <i>linear</i> point is reached on a straight line; a <i>blend</i> point is passed through without stopping (joint moves only). The gripper target is applied on arrival.</p>
+  </section>
+
+  <!-- ───────────── column 3: playback ───────────── -->
+  <section class="card">
+    <h2>Playback</h2>
+    <div class="row">
+      <label>Speed <b id="pb-speed-val">50</b> %</label>
+      <input type="range" id="pb-speed" min="5" max="100" step="5" value="50">
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="pb-loop"> Loop</label>
+      <label>Start from <select id="pb-start"></select></label>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-plan">Plan (preview)</button>
+      <button class="btn big green" id="btn-play">▶ Play</button>
+      <button class="btn big" id="btn-pb-stop">■ Stop</button>
+    </div>
+    <div class="progress"><div id="pb-bar"></div></div>
+    <div class="kv">
+      <span><b id="pb-elapsed">0.0</b> / <b id="pb-duration">0.0</b> s</span>
+      <span>point <b id="pb-point">—</b></span>
+      <span>laps <b id="pb-laps">0</b></span>
+    </div>
+    <pre id="plan-summary" class="plan hidden"></pre>
+    <h3>Safety notes</h3>
+    <ul class="notes">
+      <li>Playback starts from <b>hold</b> mode only, from where the arm is.</li>
+      <li><b>Stop motion</b> ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
+      <li>Start free drive from a clearance pose; contact with the table corrupts the gravity model.</li>
+    </ul>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
