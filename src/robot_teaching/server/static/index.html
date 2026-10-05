@@ -16,6 +16,8 @@
     <span class="badge sub" id="fd-status"></span>
   </div>
   <div class="actions">
+    <button id="btn-connect" class="btn big blue" title="open the CAN bus, switch the motors to MIT mode, enable them and hold">Connect</button>
+    <button id="btn-disconnect" class="btn big hidden" title="close the bus; the motors are disabled, so park the arm first">Disconnect</button>
     <button id="btn-free" class="btn big amber">Free drive</button>
     <button id="btn-hold" class="btn big green">Hold</button>
     <button id="btn-stop" class="btn big" title="Space or Esc">Stop motion <kbd>Space</kbd></button>
@@ -132,6 +134,9 @@
       <button class="btn big green" id="btn-play">▶ Play</button>
       <button class="btn big" id="btn-pb-stop">■ Stop</button>
     </div>
+    <div class="row">
+      <button class="btn" id="btn-park" title="planned move to the rest pose (config: park.pose); do this before Disconnect">Park (rest pose)</button>
+    </div>
     <div class="progress"><div id="pb-bar"></div></div>
     <div class="kv">
       <span><b id="pb-elapsed">0.0</b> / <b id="pb-duration">0.0</b> s</span>
@@ -141,6 +146,7 @@
     <pre id="plan-summary" class="plan hidden"></pre>
     <h3>Safety notes</h3>
     <ul class="notes">
+      <li><b>Connect</b> enables the motors and holds the pose; <b>Disconnect</b> switches them off, so <b>Park</b> first.</li>
       <li>Playback starts from <b>hold</b> mode only, from where the arm is.</li>
       <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
       <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>

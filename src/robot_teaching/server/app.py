@@ -9,6 +9,7 @@ refetch the program.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -118,6 +119,10 @@ class AppState:
             raise HTTPException(503, "controller not running")
         return s
 
+    def require_connected(self) -> None:
+        if not self.controller.is_connected:
+            raise HTTPException(409, "not connected; press Connect first")
+
     def pose_dict(self, q) -> dict:
         with self.model_lock:
             return self.model.pose(np.asarray(q, float)).to_dict()
@@ -144,7 +149,9 @@ class AppState:
         g = self.cfg.gripper
         return min(g.closed_position, g.open_position), max(g.closed_position, g.open_position)
 
-    def plan(self, program: Program, loop: bool, start_index: int):
+    def plan(self, program: Program, loop: bool, start_index: int, cfg: TeachingConfig | None = None):
+        cfg = cfg or self.cfg
+        self.require_connected()
         s = self.snap()
         if s.mode != Mode.HOLD.value:
             raise HTTPException(409, "switch to hold mode before playing")
@@ -154,7 +161,7 @@ class AppState:
             raise HTTPException(400, "start_index beyond the last point")
         try:
             with self.model_lock:
-                return plan_program(self.model, program, s.q_target, self.cfg,
+                return plan_program(self.model, program, s.q_target, cfg,
                                     gripper_start=s.gripper_target, start_index=start_index, loop=loop)
         except PlanningError as e:
             raise HTTPException(400, f"planning failed: {e}")
@@ -170,17 +177,18 @@ def _result(ok_msg: tuple[bool, str], conflict: bool = True) -> dict:
 # ── app factory ───────────────────────────────────────────────────────────────
 
 def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramStore,
-               backend_name: str = "", model: RobotModel | None = None, manage_lifecycle: bool = True) -> FastAPI:
+               backend_name: str = "", model: RobotModel | None = None, connect_on_start: bool = True) -> FastAPI:
+    """Build the app. With ``connect_on_start=False`` the arm is connected from the UI (POST /api/connect)."""
     state = AppState(controller, cfg, store, model, backend_name)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if manage_lifecycle:
+        if connect_on_start:
             controller.start()
         try:
             yield
         finally:
-            if manage_lifecycle:
+            if controller.is_connected:
                 controller.shutdown()
 
     app = FastAPI(title="robot_teaching", version="0.1.0", lifespan=lifespan)
@@ -213,7 +221,9 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
                 "open_position": cfg.gripper.open_position,
             },
             "playback": {"default_speed": cfg.playback.default_speed},
+            "park": {"pose": resolve_vector(cfg.park.pose, n, "park.pose").tolist(), "speed": cfg.park.speed},
             "control_rate": controller.rate,
+            "connected": controller.is_connected,
         }
 
     @app.get("/api/state")
@@ -233,23 +243,63 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         except (WebSocketDisconnect, RuntimeError):
             return
 
+    # ── connection ────────────────────────────────────────────────────────
+    @app.post("/api/connect")
+    def connect():
+        """Open the bus, switch the motors to MIT mode, enable them and hold the current pose."""
+        if controller.is_connected:
+            return {"ok": True, "message": "already connected"}
+        try:
+            controller.start()
+        except Exception as e:
+            raise HTTPException(502, f"could not connect to the arm: {type(e).__name__}: {e}")
+        return {"ok": True, "message": "connected, holding the current pose"}
+
+    @app.post("/api/disconnect")
+    def disconnect():
+        """Stop the loop and close the bus. On the real arm this disables the motors: park first."""
+        if not controller.is_connected:
+            return {"ok": True, "message": "already disconnected"}
+        s = state.snap()
+        if s.mode == Mode.PLAYBACK.value:
+            raise HTTPException(409, "stop playback before disconnecting")
+        controller.shutdown()
+        return {"ok": True, "message": "disconnected (motors off)"}
+
+    @app.post("/api/park")
+    def park(req: MoveToRequest):
+        """Planned joint move to the configured rest pose, so the arm can be disconnected safely."""
+        pose = resolve_vector(cfg.park.pose, n, "park.pose")
+        single = Program(name="park", points=[TaughtPoint(
+            q=pose.tolist(), gripper=state.gripper_value(), name="park", motion="joint",
+            speed=req.speed if req.speed is not None else cfg.park.speed,
+        )])
+        # The rest pose may sit exactly on a joint limit (the URDF zero does), so plan it without the margin.
+        no_margin = dataclasses.replace(cfg, limits=dataclasses.replace(cfg.limits, joint_position_margin=0.0))
+        traj = state.plan(single, loop=False, start_index=0, cfg=no_margin)
+        return _result(controller.play(traj, speed=1.0, loop=False)) | {"duration": traj.duration}
+
     # ── modes / safety ────────────────────────────────────────────────────
     @app.post("/api/mode")
     def set_mode(req: ModeRequest):
+        state.require_connected()
         if req.mode == "hold":
             return _result(controller.hold())
         return _result(controller.free_drive())
 
     @app.post("/api/stop")
     def stop():
+        state.require_connected()
         return _result(controller.stop_motion())
 
     @app.post("/api/estop")
     def estop():
+        state.require_connected()
         return _result(controller.estop())
 
     @app.post("/api/enable")
     def enable():
+        state.require_connected()
         return _result(controller.enable())
 
     # ── jogging ───────────────────────────────────────────────────────────
@@ -257,6 +307,7 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
     def jog_joint(req: JointJog):
         if req.joint >= n:
             raise HTTPException(400, f"joint index must be < {n}")
+        state.require_connected()
         s = state.snap()
         if s.mode != Mode.HOLD.value:
             raise HTTPException(409, "jogging is only available in hold mode")
@@ -267,6 +318,7 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
 
     @app.post("/api/jog/cartesian")
     def jog_cartesian(req: CartesianJog):
+        state.require_connected()
         s = state.snap()
         if s.mode != Mode.HOLD.value:
             raise HTTPException(409, "jogging is only available in hold mode")
@@ -299,6 +351,7 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
     def gripper(req: GripperRequest):
         if not controller.backend.has_gripper:
             raise HTTPException(400, "this arm has no gripper")
+        state.require_connected()
         if req.action == "open":
             pos = cfg.gripper.open_position
         elif req.action == "close":
@@ -331,6 +384,7 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
 
     @app.post("/api/program/points")
     def record_point(req: RecordRequest):
+        state.require_connected()
         q = state.current_q()
         if not state.model.within_limits(q, 0.0):
             raise HTTPException(409, "the arm is outside its joint limits")
@@ -350,6 +404,7 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         except KeyError:
             raise HTTPException(404, "no such point")
         if req.update_from_robot:
+            state.require_connected()
             p.q = state.current_q().tolist()
             p.gripper = state.gripper_value()
             p.pose = state.pose_dict(p.q)

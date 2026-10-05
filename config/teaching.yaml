@@ -64,4 +64,11 @@ playback:
   default_speed: 0.5           # initial speed scale (0..1]
   dwell_default: 0.0           # s
 
+park:
+  # Rest pose the Park action moves to before you disconnect (motor rad). Disconnecting
+  # cuts motor torque, so park where the arm can rest. The URDF zero is the extended
+  # rest pose with the gripper on the table (upstream safe_home goes there too).
+  pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  speed: 0.3
+
 programs_dir: programs

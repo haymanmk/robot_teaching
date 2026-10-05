@@ -20,6 +20,7 @@ h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); text-transform: u
 .badge.free_drive { background: #3d2d0c; color: var(--amber); }
 .badge.playback { background: #14305e; color: var(--accent); }
 .badge.disabled { background: #4a1618; color: #ff8a8e; }
+.badge.disconnected { background: #2a2f3a; color: var(--muted); }
 .badge.sub { text-transform: none; font-weight: 500; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 

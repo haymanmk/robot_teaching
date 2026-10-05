@@ -72,8 +72,13 @@ and make sure the motor zero has been set once with the vendor's `example/2_zero
 uv run robot-teaching serve --backend rebotarm --host 0.0.0.0   # reachable from a tablet on the LAN
 ```
 
-On start the controller connects, switches every motor to MIT mode, enables them and holds
-the current pose with the stiff gains from the vendor's hardware YAML.
+With the real arm the server starts **disconnected**: open the UI and press **Connect**
+when the arm is powered and clear. Connecting opens the bus, switches every motor to MIT
+mode, enables them and holds the current pose with the stiff gains from the vendor's
+hardware YAML. **Disconnect** closes the bus, which (upstream behaviour) switches the
+motors off, so press **Park** first: it is a planned joint move to the rest pose in
+`config/teaching.yaml` (`park.pose`, default the URDF zero). `--connect auto` connects at
+startup instead; the simulator defaults to `auto` and accepts `--connect manual`.
 
 Offline check of a saved program:
 
@@ -83,8 +88,8 @@ uv run robot-teaching plan programs/example_pick_place.json --csv /tmp/traj.csv
 
 ## Teaching workflow
 
-1. Move the arm to a **clearance pose** (elbow up, nothing touching the table) and press
-   **Free drive**. Gains fade from stiff to compliant over 0.5 s; the badge shows
+1. Press **Connect** (real arm; the simulator connects by itself). Move the arm to a
+   **clearance pose** (elbow up, nothing touching the table) and press **Free drive**. Gains fade from stiff to compliant over 0.5 s; the badge shows
    `LOCKED`. Push the end-effector: the arm follows (`FOLLOW`) and re-locks when you stop.
 2. Press **● Record point**. The current joint configuration, end-effector pose and gripper
    target are stored with the chosen motion type / speed / blend / dwell.

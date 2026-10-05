@@ -138,17 +138,23 @@
       $("grip-slider-val").textContent = gripLabel(frac);
     }
 
+    const disc = !state.connected;
     const hold = state.mode === "hold", free = state.mode === "free_drive", play = state.mode === "playback", off = state.mode === "disabled";
-    $("jog-card").classList.toggle("off", !hold || !state.gains_settled);
-    $("btn-free").disabled = free || play || off;
-    $("btn-hold").disabled = hold || off;
-    $("btn-stop").disabled = off;
-    $("btn-enable").classList.toggle("hidden", !off);
-    $("btn-estop").classList.toggle("hidden", off);
-    $("btn-play").disabled = !hold || !state.gains_settled || state.jogging;
-    $("btn-plan").disabled = !hold;
+    $("btn-connect").classList.toggle("hidden", !disc);
+    $("btn-disconnect").classList.toggle("hidden", disc);
+    $("btn-disconnect").disabled = play;
+    $("jog-card").classList.toggle("off", disc || !hold || !state.gains_settled);
+    $("btn-free").disabled = disc || free || play || off;
+    $("btn-hold").disabled = disc || hold || off;
+    $("btn-stop").disabled = disc || off;
+    $("btn-enable").classList.toggle("hidden", disc || !off);
+    $("btn-estop").classList.toggle("hidden", !disc && off);
+    $("btn-estop").disabled = disc;
+    $("btn-play").disabled = disc || !hold || !state.gains_settled || state.jogging;
+    $("btn-plan").disabled = disc || !hold;
+    $("btn-park").disabled = disc || !hold || !state.gains_settled || state.jogging;
     $("btn-pb-stop").disabled = !play;
-    $("btn-record").disabled = off || play;
+    $("btn-record").disabled = disc || off || play;
 
     const pb = state.playback;
     $("pb-bar").style.width = pb ? `${(pb.progress * 100).toFixed(1)}%` : "0%";
@@ -237,6 +243,19 @@
 
   // ── wiring ─────────────────────────────────────────────────────────────
   function wire() {
+    $("btn-connect").onclick = async () => {
+      $("btn-connect").disabled = true; toast("connecting…");
+      try { await act("POST", "/api/connect", undefined, "connected, holding the current pose"); }
+      finally { $("btn-connect").disabled = false; }
+    };
+    $("btn-disconnect").onclick = () => {
+      if (confirm("Disconnect switches the motors off: a loaded arm will fall.\nPark the arm first. Disconnect now?"))
+        act("POST", "/api/disconnect", undefined, "disconnected (motors off)");
+    };
+    $("btn-park").onclick = async () => {
+      const r = await act("POST", "/api/park", {}, false);
+      if (r) toast(`parking: ${r.duration.toFixed(1)} s move to the rest pose`);
+    };
     $("btn-free").onclick = () => act("POST", "/api/mode", { mode: "free_drive" }, "free drive: gains fading in");
     $("btn-hold").onclick = () => act("POST", "/api/mode", { mode: "hold" }, "holding");
     $("btn-stop").onclick = () => act("POST", "/api/stop", undefined, "stopping");
@@ -297,6 +316,7 @@
     ev.preventDefault(); ev.stopPropagation();
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     if (ev.repeat) return;                        // key held down: one stop is enough
+    if (state && !state.connected) return;        // nothing to stop
     const btn = $("btn-stop");
     btn.classList.add("flash"); setTimeout(() => btn.classList.remove("flash"), 400);
     act("POST", "/api/stop", undefined, `stop (${ev.key === "Escape" ? "Esc" : "Space"})`);

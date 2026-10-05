@@ -27,8 +27,10 @@ def _serve(args: argparse.Namespace) -> int:
         backend = make_backend("rebotarm", hw_yaml=args.hw_yaml)
     controller = TeachController(backend, cfg)
     store = ProgramStore(cfg.programs_path())
-    app = create_app(controller, cfg, store, backend_name=args.backend)
+    connect = args.connect or ("auto" if args.backend == "sim" else "manual")
+    app = create_app(controller, cfg, store, backend_name=args.backend, connect_on_start=(connect == "auto"))
     print(f"[robot-teaching] backend={args.backend} rate={controller.rate:.0f} Hz programs={store.dir}")
+    print(f"[robot-teaching] connection: {connect}" + ("" if connect == "auto" else " (press Connect in the UI or POST /api/connect)"))
     print(f"[robot-teaching] UI: http://{args.host}:{args.port}/   API docs: http://{args.host}:{args.port}/docs")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
@@ -70,6 +72,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--config", default=None, help="path to teaching.yaml")
     s.add_argument("--hw-yaml", default=None, help="upstream hardware YAML (default from rebotarm.yaml)")
     s.add_argument("--sim-q0", default="0,0.7,1.1,0,0,0", help="initial joint angles for the simulator, comma separated (rad)")
+    s.add_argument("--connect", choices=["auto", "manual"], default=None,
+                   help="connect to the arm at startup (auto) or from the UI's Connect button (manual); "
+                        "default: auto for sim, manual for rebotarm")
     s.add_argument("--log-level", default="info")
     s.set_defaults(func=_serve)
 

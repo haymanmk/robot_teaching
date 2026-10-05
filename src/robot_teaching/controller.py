@@ -2,7 +2,8 @@
 
 Modes
 -----
-``DISABLED``   motors off (after an e-stop or before start).
+``DISCONNECTED`` no bus connection (before :meth:`start` / after :meth:`shutdown`).
+``DISABLED``   motors off after an e-stop.
 ``HOLD``       stiff position hold with gravity feed-forward. Jog commands move
                the hold target toward a goal at a limited speed.
 ``FREE_DRIVE`` gravity-compensated compliance for drag teaching, with an
@@ -41,6 +42,7 @@ from .planning import Trajectory
 
 
 class Mode(str, Enum):
+    DISCONNECTED = "disconnected"
     DISABLED = "disabled"
     HOLD = "hold"
     FREE_DRIVE = "free_drive"
@@ -51,6 +53,7 @@ class Mode(str, Enum):
 class Snapshot:
     time: float
     mode: str
+    connected: bool
     enabled: bool
     q: np.ndarray
     qd: np.ndarray
@@ -71,6 +74,7 @@ class Snapshot:
         return {
             "time": self.time,
             "mode": self.mode,
+            "connected": self.connected,
             "enabled": self.enabled,
             "q": self.q.tolist(),
             "qd": self.qd.tolist(),
@@ -130,7 +134,7 @@ class TeachController:
         self._jog_vel = float(cfg.jog.joint_velocity)
 
         # Control-thread state.
-        self._mode = Mode.DISABLED
+        self._mode = Mode.DISCONNECTED
         self._q = np.zeros(n)
         self._qd = np.zeros(n)
         self._q_prev: np.ndarray | None = None
@@ -162,46 +166,84 @@ class TeachController:
         self._snapshot: Snapshot | None = None
         self._ticks = 0
         self._last_dt = 1.0 / self.rate
+        self._publish(self._last_dt)      # a snapshot exists before the first connection
 
     # ══════════════════════════════════════════════════════════════════════
     # lifecycle (API thread)
     # ══════════════════════════════════════════════════════════════════════
 
+    @property
+    def is_connected(self) -> bool:
+        return self._started
+
     def start(self) -> None:
-        if self._started:
-            return
-        self.backend.connect()
-        self.backend.enable()
-        q, g = self.backend.read_positions()
-        self._q = np.asarray(q, float)[: self.n].copy()
-        self._q_target = self._q.copy()
-        self._q_goal = self._q.copy()
-        self._gripper = g
-        self._gripper_target = g
-        self._tau_g = self._gravity(self._q)
-        self._set_gains(self._hold_kp, self._hold_kd, 0.0)
-        self._enabled = True
-        self._mode = Mode.HOLD
-        self._publish(0.0)
+        """Connect, put the motors in MIT mode, enable them and start the loop holding the current pose.
+
+        Raises whatever the backend raises (no bus, no motor answer); the
+        controller then stays DISCONNECTED.
+        """
+        with self._lock:
+            if self._started:
+                return
+            try:
+                self.backend.connect()
+                self.backend.enable()
+                q, g = self.backend.read_positions()
+            except Exception:
+                try:
+                    self.backend.disconnect()
+                except Exception:
+                    pass
+                self._mode = Mode.DISCONNECTED
+                self._publish(self._last_dt)
+                raise
+            self._q = np.asarray(q, float)[: self.n].copy()
+            self._q_prev = None
+            self._qd = np.zeros(self.n)
+            self._q_target = self._q.copy()
+            self._q_goal = self._q.copy()
+            self._gripper = g
+            self._gripper_target = g
+            self._tau_g = self._gravity(self._q)
+            self._set_gains(self._hold_kp, self._hold_kd, 0.0)
+            self._error = None
+            self._pb = None
+            self._fd_status = ""
+            self._enabled = True
+            self._mode = Mode.HOLD
+            self._started = True
+            self._publish(0.0)
         self.backend.start_loop(self._tick, self.rate)
-        self._started = True
 
     def shutdown(self, disable: bool = False) -> None:
-        """Stop the loop, leaving the motors holding (or disabled when asked)."""
+        """Stop the loop and close the bus.
+
+        The upstream actuator disables every motor when it disconnects, so on the
+        real arm this is torque-off: park the arm first.
+        """
         if not self._started:
             return
-        self.backend.stop_loop()
-        if self._enabled:
+        self.backend.stop_loop()          # joins the loop thread; must not hold the lock
+        with self._lock:
+            if self._enabled:
+                try:
+                    if disable:
+                        self.backend.disable()
+                    else:
+                        tau = self._gravity(self._q)
+                        self.backend.send_arm_mit(self._q_target, np.zeros(self.n), self._hold_kp, self._hold_kd, tau)
+                except Exception:
+                    pass
             try:
-                if disable:
-                    self.backend.disable()
-                else:
-                    tau = self._gravity(self._q)
-                    self.backend.send_arm_mit(self._q_target, np.zeros(self.n), self._hold_kp, self._hold_kd, tau)
-            except Exception:
-                pass
-        self.backend.disconnect()
-        self._started = False
+                self.backend.disconnect()
+            except Exception as e:
+                self._error = f"disconnect: {type(e).__name__}: {e}"
+            self._started = False
+            self._enabled = False
+            self._mode = Mode.DISCONNECTED
+            self._pb = None
+            self._fd_status = ""
+            self._publish(self._last_dt)
 
     # ══════════════════════════════════════════════════════════════════════
     # public commands (API thread)
@@ -321,6 +363,8 @@ class TeachController:
     # ── command handling ──────────────────────────────────────────────────
 
     def _handle(self, k: str, payload: Any) -> tuple[bool, str]:
+        if not self._started:
+            return False, "not connected; connect to the arm first"
         if k == "estop":
             self.backend.disable()
             self._enabled = False
@@ -545,6 +589,7 @@ class TeachController:
         snap = Snapshot(
             time=time.time(),
             mode=self._mode.value,
+            connected=self._started,
             enabled=self._enabled,
             q=self._q.copy(),
             qd=self._qd.copy(),

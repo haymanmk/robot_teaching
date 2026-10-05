@@ -10,15 +10,27 @@ from robot_teaching.server import create_app
 from conftest import L_POSE
 
 
+def _client(cfg, model, tmp_path, connect_on_start=True, backend_cls=SimBackend):
+    sim = backend_cls(realtime=False, q0=L_POSE, model=model)
+    ctl = TeachController(sim, cfg)
+    app = create_app(ctl, cfg, ProgramStore(tmp_path), backend_name="sim", model=model,
+                     connect_on_start=connect_on_start)
+    c = TestClient(app)
+    c.sim = sim
+    c.ctl = ctl
+    return c
+
+
 @pytest.fixture
 def client(cfg, model, tmp_path):
-    sim = SimBackend(realtime=False, q0=L_POSE, model=model)
-    ctl = TeachController(sim, cfg)
-    app = create_app(ctl, cfg, ProgramStore(tmp_path), backend_name="sim", model=model)
-    with TestClient(app) as c:
-        c.sim = sim
-        c.ctl = ctl
-        sim.step(200)
+    with _client(cfg, model, tmp_path) as c:
+        c.sim.step(200)
+        yield c
+
+
+@pytest.fixture
+def manual_client(cfg, model, tmp_path):
+    with _client(cfg, model, tmp_path, connect_on_start=False) as c:
         yield c
 
 
@@ -100,3 +112,54 @@ def test_websocket_stream(client):
     with client.websocket_connect("/ws/state") as ws:
         msg = ws.receive_json()
     assert "state" in msg and "program_rev" in msg and msg["state"]["mode"] == "hold"
+
+
+def test_manual_connect_park_disconnect(manual_client, cfg):
+    c = manual_client
+    st = c.get("/api/state").json()["state"]
+    assert st["mode"] == "disconnected" and not st["connected"]
+    assert c.get("/api/config").json()["connected"] is False
+    for path, body in (("/api/mode", {"mode": "hold"}), ("/api/jog/joint", {"joint": 0, "delta": 0.1}),
+                       ("/api/program/points", {}), ("/api/playback/start", {}), ("/api/park", {})):
+        r = c.post(path, json=body)
+        assert r.status_code == 409 and "not connected" in r.json()["detail"], path
+    assert c.post("/api/disconnect").json()["message"] == "already disconnected"
+    assert c.post("/api/connect").status_code == 200
+    assert c.post("/api/connect").json()["message"] == "already connected"
+    c.sim.step(200)
+    st = c.get("/api/state").json()["state"]
+    assert st["mode"] == "hold" and st["connected"] and c.sim.enabled
+    # Park: planned joint move to the rest pose, which sits on the joint-2/3 lower limit.
+    r = c.post("/api/park", json={})
+    assert r.status_code == 200, r.text
+    ticks = 0
+    while c.get("/api/state").json()["state"]["mode"] == "playback":
+        c.sim.step(50)
+        ticks += 50
+        assert ticks < 30000
+    st = c.get("/api/state").json()["state"]
+    assert np.max(np.abs(np.array(st["q_target"]) - np.array(cfg.park.pose))) < 1e-6
+    assert c.post("/api/disconnect").status_code == 200
+    st = c.get("/api/state").json()["state"]
+    assert st["mode"] == "disconnected" and not st["connected"] and not c.sim.enabled
+
+
+def test_connect_failure_reports_error(cfg, model, tmp_path):
+    class DeadBus(SimBackend):
+        def connect(self):
+            raise RuntimeError("can0: no such device")
+
+    with _client(cfg, model, tmp_path, connect_on_start=False, backend_cls=DeadBus) as c:
+        r = c.post("/api/connect")
+        assert r.status_code == 502 and "can0" in r.json()["detail"]
+        assert c.get("/api/state").json()["state"]["mode"] == "disconnected"
+
+
+def test_disconnect_refused_during_playback(client):
+    client.post("/api/program/points", json={})
+    client.post("/api/jog/joint", json={"joint": 0, "delta": 0.3})
+    client.sim.step(700)
+    client.post("/api/program/points", json={})
+    assert client.post("/api/playback/start", json={"speed": 0.5}).status_code == 200
+    client.sim.step(100)
+    assert client.post("/api/disconnect").status_code == 409

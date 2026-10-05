@@ -90,6 +90,12 @@ class GripperConfig:
 
 
 @dataclass
+class ParkConfig:
+    pose: Any = 0.0        # rad, scalar or one value per joint; the URDF zero is the extended rest pose
+    speed: float = 0.3
+
+
+@dataclass
 class PlaybackConfig:
     default_speed: float = 0.5
     dwell_default: float = 0.0
@@ -104,6 +110,7 @@ class TeachingConfig:
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
+    park: ParkConfig = field(default_factory=ParkConfig)
     programs_dir: str = "programs"
     source_path: Path | None = None
 
@@ -137,6 +144,7 @@ _SECTIONS = {
     "jog": JogConfig,
     "gripper": GripperConfig,
     "playback": PlaybackConfig,
+    "park": ParkConfig,
 }
 
 

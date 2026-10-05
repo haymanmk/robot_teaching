@@ -170,3 +170,37 @@ def test_backend_error_falls_back_to_hold(rig):
     s = settle(sim, ctl, 5)
     assert s.error and "CAN timeout" in s.error
     assert s.mode == Mode.HOLD.value
+
+
+def test_connection_lifecycle(cfg, model):
+    sim = SimBackend(realtime=False, q0=L_POSE, model=model)
+    ctl = TeachController(sim, cfg)
+    s = ctl.snapshot()
+    assert s is not None and s.mode == Mode.DISCONNECTED.value and not s.connected and not s.enabled
+    ok, msg = ctl.hold()
+    assert not ok and "not connected" in msg
+    assert not ctl.estop()[0]
+    ctl.start()
+    s = settle(sim, ctl, 100)
+    assert s.connected and s.mode == Mode.HOLD.value and sim.enabled
+    ctl.shutdown()
+    s = ctl.snapshot()
+    assert s.mode == Mode.DISCONNECTED.value and not s.connected and not sim.enabled
+    assert not ctl.free_drive()[0]
+    ctl.start()                       # reconnecting works
+    s = settle(sim, ctl, 100)
+    assert s.mode == Mode.HOLD.value and np.max(np.abs(s.q - s.q_target)) < 0.01
+    ctl.shutdown()
+
+
+def test_failed_connect_stays_disconnected(cfg, model):
+    class DeadBus(SimBackend):
+        def connect(self):
+            raise RuntimeError("can0: no such device")
+
+    sim = DeadBus(realtime=False, q0=L_POSE, model=model)
+    ctl = TeachController(sim, cfg)
+    with pytest.raises(RuntimeError, match="can0"):
+        ctl.start()
+    s = ctl.snapshot()
+    assert s.mode == Mode.DISCONNECTED.value and not ctl.is_connected
