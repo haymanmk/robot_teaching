@@ -1,3 +1,6 @@
+import dataclasses
+import time
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -13,8 +16,9 @@ from conftest import L_POSE
 def _client(cfg, model, tmp_path, connect_on_start=True, backend_cls=SimBackend):
     sim = backend_cls(realtime=False, q0=L_POSE, model=model)
     ctl = TeachController(sim, cfg)
+    # The stepped simulator cannot execute a park move during shutdown; the realtime test covers it.
     app = create_app(ctl, cfg, ProgramStore(tmp_path), backend_name="sim", model=model,
-                     connect_on_start=connect_on_start)
+                     connect_on_start=connect_on_start, park_on_shutdown=False)
     c = TestClient(app)
     c.sim = sim
     c.ctl = ctl
@@ -139,7 +143,9 @@ def test_manual_connect_park_disconnect(manual_client, cfg):
         assert ticks < 30000
     st = c.get("/api/state").json()["state"]
     assert np.max(np.abs(np.array(st["q_target"]) - np.array(cfg.park.pose))) < 1e-6
-    assert c.post("/api/disconnect").status_code == 200
+    c.sim.step(300)                      # let the simulated arm settle on the rest pose
+    r = c.post("/api/disconnect")        # default park=True: already there, so no move is needed
+    assert r.status_code == 200 and r.json()["message"].startswith("parked and"), r.text
     st = c.get("/api/state").json()["state"]
     assert st["mode"] == "disconnected" and not st["connected"] and not c.sim.enabled
 
@@ -162,7 +168,51 @@ def test_disconnect_refused_during_playback(client):
     client.post("/api/program/points", json={})
     assert client.post("/api/playback/start", json={"speed": 0.5}).status_code == 200
     client.sim.step(100)
-    assert client.post("/api/disconnect").status_code == 409
+    assert client.post("/api/disconnect", json={"park": False}).status_code == 409
+
+
+def _near_park_cfg(cfg):
+    pose = (L_POSE + np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0])).tolist()
+    return dataclasses.replace(cfg, park=dataclasses.replace(cfg.park, pose=pose, speed=1.0, on_shutdown=True))
+
+
+def test_disconnect_and_shutdown_park_first(cfg, model, tmp_path):
+    """Realtime simulator: Disconnect parks (from free drive) and so does the lifespan shutdown (Ctrl+C)."""
+    near = _near_park_cfg(cfg)
+    sim = SimBackend(realtime=True, q0=L_POSE, model=model)
+    ctl = TeachController(sim, near)
+    app = create_app(ctl, near, ProgramStore(tmp_path), backend_name="sim", model=model)
+    with TestClient(app) as c:
+        time.sleep(0.3)
+        assert c.post("/api/mode", json={"mode": "free_drive"}).status_code == 200
+        time.sleep(0.8)
+        t0 = time.monotonic()
+        r = c.post("/api/disconnect")
+        assert r.status_code == 200 and r.json()["message"] == "parked and disconnected (motors off)", r.text
+        assert time.monotonic() - t0 > 0.3            # it waited for the hold fade and the move
+        q, _ = sim.read_positions()
+        assert np.max(np.abs(q - near.park.pose)) < 0.03 and not sim.enabled
+        # Reconnect, jog away, and let the context exit (lifespan shutdown) park again.
+        assert c.post("/api/connect").status_code == 200
+        time.sleep(0.3)
+        assert c.post("/api/jog/joint", json={"joint": 0, "delta": -0.15}).status_code == 200
+        time.sleep(0.8)
+    q, _ = sim.read_positions()
+    assert np.max(np.abs(q - near.park.pose)) < 0.03 and not sim.enabled and not ctl.is_connected
+
+
+def test_disconnect_refuses_when_park_cannot_be_planned(cfg, model, tmp_path):
+    bad = dataclasses.replace(cfg, park=dataclasses.replace(cfg.park, pose=[0.0, -1.0, 0.0, 0.0, 0.0, 0.0]))
+    sim = SimBackend(realtime=True, q0=L_POSE, model=model)
+    ctl = TeachController(sim, bad)
+    app = create_app(ctl, bad, ProgramStore(tmp_path), backend_name="sim", model=model, park_on_shutdown=False)
+    with TestClient(app) as c:
+        time.sleep(0.3)
+        r = c.post("/api/disconnect")
+        assert r.status_code == 409 and "cannot plan the park move" in r.json()["detail"]
+        assert ctl.is_connected and sim.enabled
+        assert c.post("/api/disconnect", json={"park": False}).status_code == 200
+    assert not ctl.is_connected
 
 
 def test_gripper_controls_in_free_drive(client):

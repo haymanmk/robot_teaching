@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -79,6 +80,10 @@ class ReorderRequest(BaseModel):
 
 class NewProgramRequest(BaseModel):
     name: str = "untitled"
+
+
+class DisconnectRequest(BaseModel):
+    park: bool = True       # move to the rest pose and wait before switching the motors off
 
 
 class PlaybackRequest(BaseModel):
@@ -166,6 +171,71 @@ class AppState:
         except PlanningError as e:
             raise HTTPException(400, f"planning failed: {e}")
 
+    # -- parking --------------------------------------------------------------
+
+    def park_pose(self) -> np.ndarray:
+        return resolve_vector(self.cfg.park.pose, self.controller.n, "park.pose")
+
+    def park_trajectory(self, q_start: np.ndarray, gripper: float, speed: float | None = None):
+        """Plan the joint move to the rest pose (without the joint-limit margin: the rest pose may sit on a limit)."""
+        single = Program(name="park", points=[TaughtPoint(
+            q=self.park_pose().tolist(), gripper=gripper, name="park", motion="joint",
+            speed=speed if speed is not None else self.cfg.park.speed,
+        )])
+        no_margin = dataclasses.replace(self.cfg, limits=dataclasses.replace(self.cfg.limits, joint_position_margin=0.0))
+        with self.model_lock:
+            return plan_program(self.model, single, q_start, no_margin, gripper_start=gripper)
+
+    def _wait(self, pred, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            s = self.controller.snapshot()
+            if s is not None and pred(s):
+                return True
+            time.sleep(0.02)
+        return False
+
+    def park_blocking(self, log=None) -> tuple[bool, str]:
+        """Bring the arm to hold, play the park move and wait for it. Used before disconnecting.
+
+        Returns (ok, message). ``ok`` is True when the arm rests at the park pose or
+        there is nothing to park (not connected, motors already disabled).
+        """
+        ctl = self.controller
+        log = log or (lambda _m: None)
+        if not ctl.is_connected:
+            return True, "not connected"
+        s = ctl.snapshot()
+        if not s.enabled:
+            return True, "motors are disabled (e-stop); nothing to park"
+        if s.mode == Mode.PLAYBACK.value:
+            log("stopping playback")
+            ctl.stop_motion()
+        elif s.mode == Mode.FREE_DRIVE.value:
+            log("leaving free drive")
+            ctl.hold()
+        if not self._wait(lambda s: s.mode == Mode.HOLD.value and s.gains_settled and not s.jogging, 5.0):
+            return False, "the arm did not settle into hold"
+        s = ctl.snapshot()
+        pose = self.park_pose()
+        if np.max(np.abs(s.q_target - pose)) < 1e-3 and np.max(np.abs(s.q - pose)) < 0.05:
+            return True, "already at the rest pose"
+        try:
+            traj = self.park_trajectory(s.q_target, self.gripper_value())
+        except (PlanningError, ValueError) as e:
+            return False, f"cannot plan the park move: {e}"
+        ok, msg = ctl.play(traj, speed=1.0, loop=False)
+        if not ok:
+            return False, f"cannot start the park move: {msg}"
+        log(f"parking: {traj.duration:.1f} s move to the rest pose")
+        if not self._wait(lambda s: s.mode != Mode.PLAYBACK.value, traj.duration + 5.0):
+            ctl.stop_motion()
+            return False, "the park move timed out"
+        s = ctl.snapshot()
+        if s.error:
+            return False, f"controller error while parking: {s.error}"
+        return True, "parked at the rest pose"
+
 
 def _result(ok_msg: tuple[bool, str], conflict: bool = True) -> dict:
     ok, msg = ok_msg
@@ -177,9 +247,21 @@ def _result(ok_msg: tuple[bool, str], conflict: bool = True) -> dict:
 # ── app factory ───────────────────────────────────────────────────────────────
 
 def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramStore,
-               backend_name: str = "", model: RobotModel | None = None, connect_on_start: bool = True) -> FastAPI:
-    """Build the app. With ``connect_on_start=False`` the arm is connected from the UI (POST /api/connect)."""
+               backend_name: str = "", model: RobotModel | None = None, connect_on_start: bool = True,
+               park_on_shutdown: bool | None = None) -> FastAPI:
+    """Build the app.
+
+    ``connect_on_start=False`` leaves the arm to be connected from the UI (POST /api/connect).
+    ``park_on_shutdown`` (default ``cfg.park.on_shutdown``) parks the arm at the rest pose and
+    waits for the move before the bus is closed on shutdown (Ctrl+C), since closing the bus
+    disables the motors.
+    """
     state = AppState(controller, cfg, store, model, backend_name)
+    if park_on_shutdown is None:
+        park_on_shutdown = bool(cfg.park.on_shutdown)
+
+    def console(msg: str) -> None:
+        print(f"[robot-teaching] {msg}", flush=True)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -189,7 +271,11 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
             yield
         finally:
             if controller.is_connected:
+                if park_on_shutdown:
+                    ok, msg = state.park_blocking(log=console)
+                    console(f"shutdown: {msg}" if ok else f"shutdown: {msg}; disconnecting anyway, the motors will be disabled")
                 controller.shutdown()
+                console("disconnected")
 
     app = FastAPI(title="robot_teaching", version="0.1.0", lifespan=lifespan)
     app.state.teaching = state
@@ -256,27 +342,34 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         return {"ok": True, "message": "connected, holding the current pose"}
 
     @app.post("/api/disconnect")
-    def disconnect():
-        """Stop the loop and close the bus. On the real arm this disables the motors: park first."""
+    def disconnect(req: DisconnectRequest | None = None):
+        """Park the arm (unless ``park`` is false), then stop the loop and close the bus (motors off)."""
+        park = req.park if req is not None else True
         if not controller.is_connected:
             return {"ok": True, "message": "already disconnected"}
-        s = state.snap()
-        if s.mode == Mode.PLAYBACK.value:
-            raise HTTPException(409, "stop playback before disconnecting")
+        if park:
+            ok, msg = state.park_blocking()
+            if not ok:
+                raise HTTPException(409, f"still connected: {msg}. Fix it, or disconnect with park=false "
+                                         "only if the arm is already resting safely")
+        elif state.snap().mode == Mode.PLAYBACK.value:
+            raise HTTPException(409, "stop playback before disconnecting without parking")
         controller.shutdown()
-        return {"ok": True, "message": "disconnected (motors off)"}
+        return {"ok": True, "message": ("parked and " if park else "") + "disconnected (motors off)"}
 
     @app.post("/api/park")
     def park(req: MoveToRequest):
-        """Planned joint move to the configured rest pose, so the arm can be disconnected safely."""
-        pose = resolve_vector(cfg.park.pose, n, "park.pose")
-        single = Program(name="park", points=[TaughtPoint(
-            q=pose.tolist(), gripper=state.gripper_value(), name="park", motion="joint",
-            speed=req.speed if req.speed is not None else cfg.park.speed,
-        )])
-        # The rest pose may sit exactly on a joint limit (the URDF zero does), so plan it without the margin.
-        no_margin = dataclasses.replace(cfg, limits=dataclasses.replace(cfg.limits, joint_position_margin=0.0))
-        traj = state.plan(single, loop=False, start_index=0, cfg=no_margin)
+        """Start the planned joint move to the configured rest pose (does not wait for it)."""
+        state.require_connected()
+        s = state.snap()
+        if s.mode != Mode.HOLD.value:
+            raise HTTPException(409, "switch to hold mode before parking")
+        if not s.gains_settled or s.jogging:
+            raise HTTPException(409, "wait for the arm to settle")
+        try:
+            traj = state.park_trajectory(s.q_target, state.gripper_value(), req.speed)
+        except (PlanningError, ValueError) as e:
+            raise HTTPException(400, f"planning failed: {e}")
         return _result(controller.play(traj, speed=1.0, loop=False)) | {"duration": traj.duration}
 
     # ── modes / safety ────────────────────────────────────────────────────

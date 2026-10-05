@@ -71,5 +71,6 @@ park:
   # rest pose with the gripper on the table (upstream safe_home goes there too).
   pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   speed: 0.3
+  on_shutdown: true            # Ctrl+C and Disconnect park the arm first, then switch the motors off
 
 programs_dir: programs

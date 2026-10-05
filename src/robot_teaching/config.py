@@ -94,6 +94,7 @@ class GripperConfig:
 class ParkConfig:
     pose: Any = 0.0        # rad, scalar or one value per joint; the URDF zero is the extended rest pose
     speed: float = 0.3
+    on_shutdown: bool = True   # park before disconnecting (Ctrl+C and the Disconnect action)
 
 
 @dataclass

@@ -75,10 +75,16 @@ uv run robot-teaching serve --backend rebotarm --host 0.0.0.0   # reachable from
 With the real arm the server starts **disconnected**: open the UI and press **Connect**
 when the arm is powered and clear. Connecting opens the bus, switches every motor to MIT
 mode, enables them and holds the current pose with the stiff gains from the vendor's
-hardware YAML. **Disconnect** closes the bus, which (upstream behaviour) switches the
-motors off, so press **Park** first: it is a planned joint move to the rest pose in
-`config/teaching.yaml` (`park.pose`, default the URDF zero). `--connect auto` connects at
-startup instead; the simulator defaults to `auto` and accepts `--connect manual`.
+hardware YAML. Closing the bus switches the motors off (upstream behaviour), so
+**Disconnect** and **Ctrl+C** first **park** the arm: a planned joint move to the rest pose
+in `config/teaching.yaml` (`park.pose`, default the URDF zero, like the vendor's
+`safe_home`), waiting for the move to finish before the motors are released. Playback is
+stopped and free drive is left first; an e-stopped arm cannot be parked (its motors are
+already off). If the park move cannot be planned, Disconnect refuses and the arm keeps
+holding; Ctrl+C prints the reason and disconnects anyway. `park.on_shutdown: false` turns
+the shutdown park off, and the **Park** button runs the same move on its own.
+`--connect auto` connects at startup instead; the simulator defaults to `auto` and accepts
+`--connect manual`.
 
 Offline check of a saved program:
 

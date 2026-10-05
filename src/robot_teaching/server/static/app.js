@@ -252,9 +252,12 @@
       try { await act("POST", "/api/connect", undefined, "connected, holding the current pose"); }
       finally { $("btn-connect").disabled = false; }
     };
-    $("btn-disconnect").onclick = () => {
-      if (confirm("Disconnect switches the motors off: a loaded arm will fall.\nPark the arm first. Disconnect now?"))
-        act("POST", "/api/disconnect", undefined, "disconnected (motors off)");
+    $("btn-disconnect").onclick = async () => {
+      if (!confirm("Disconnect parks the arm at the rest pose, waits for the move, then switches the motors off.\nKeep clear of the arm. Continue?")) return;
+      toast("parking, then disconnecting…");
+      $("btn-disconnect").disabled = true;
+      try { await act("POST", "/api/disconnect", { park: true }); }
+      finally { $("btn-disconnect").disabled = false; }
     };
     $("btn-park").onclick = async () => {
       const r = await act("POST", "/api/park", {}, false);
