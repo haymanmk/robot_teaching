@@ -357,7 +357,8 @@ class TeachController:
                 return True, "stopping"
             if self._mode == Mode.HOLD:
                 self._q_goal = self._q_target.copy()
-            return True, "stopped"
+                return True, "stopped"
+            return True, "free drive: nothing commanded to stop (press Hold to stiffen)"
         if k == "gripper":
             self._gripper_target = float(payload)
             return True, "gripper target set"

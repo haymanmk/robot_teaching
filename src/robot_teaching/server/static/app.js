@@ -286,6 +286,26 @@
     $("btn-pb-stop").onclick = () => act("POST", "/api/playback/stop", undefined, "stopping");
   }
 
+  // ── keyboard stop: Space (outside text fields) or Escape (anywhere) ────
+  // Buttons keep focus after a click and a browser activates a focused button on
+  // Space, so the handler runs in the capture phase, cancels the default action on
+  // both keydown and keyup, and drops focus before sending the stop.
+  const isTyping = (el) => !!el && (el.tagName === "TEXTAREA" || el.isContentEditable ||
+    (el.tagName === "INPUT" && !["number", "range", "checkbox", "radio", "button", "submit"].includes(el.type)));
+  const isStopKey = (ev) => ev.key === "Escape" || (ev.code === "Space" && !isTyping(ev.target));
+  function keyStop(ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    if (ev.repeat) return;                        // key held down: one stop is enough
+    const btn = $("btn-stop");
+    btn.classList.add("flash"); setTimeout(() => btn.classList.remove("flash"), 400);
+    act("POST", "/api/stop", undefined, `stop (${ev.key === "Escape" ? "Esc" : "Space"})`);
+  }
+  window.addEventListener("keydown", (ev) => { if (isStopKey(ev)) keyStop(ev); }, true);
+  window.addEventListener("keyup", (ev) => { if (isStopKey(ev)) { ev.preventDefault(); ev.stopPropagation(); } }, true);
+  // A clicked button must not stay focused, or Enter/Space would repeat it (e.g. a jog step).
+  document.addEventListener("click", (ev) => { const b = ev.target.closest && ev.target.closest("button"); if (b) b.blur(); });
+
   // ── websocket ──────────────────────────────────────────────────────────
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/state`);

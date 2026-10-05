@@ -18,7 +18,7 @@
   <div class="actions">
     <button id="btn-free" class="btn big amber">Free drive</button>
     <button id="btn-hold" class="btn big green">Hold</button>
-    <button id="btn-stop" class="btn big">Stop motion</button>
+    <button id="btn-stop" class="btn big" title="Space or Esc">Stop motion <kbd>Space</kbd></button>
     <button id="btn-enable" class="btn big blue hidden">Enable motors</button>
     <button id="btn-estop" class="btn big red">E-STOP</button>
   </div>
@@ -142,7 +142,8 @@
     <h3>Safety notes</h3>
     <ul class="notes">
       <li>Playback starts from <b>hold</b> mode only, from where the arm is.</li>
-      <li><b>Stop motion</b> ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
+      <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
+      <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>
       <li>Start free drive from a clearance pose; contact with the table corrupts the gravity model.</li>
     </ul>
   </section>

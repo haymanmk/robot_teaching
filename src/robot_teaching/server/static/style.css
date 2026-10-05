@@ -32,6 +32,8 @@ h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); text-transform: u
 .btn.red { background: #6b1d20; border-color: #a12a2f; }
 .btn.blue { background: #1f3f7a; border-color: #2c58a8; }
 .btn.on { outline: 2px solid var(--accent); }
+.btn.flash { outline: 3px solid var(--red); background: #6b1d20; }
+kbd { font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 5px; border-radius: 4px; background: #0f1218; border: 1px solid var(--line); color: var(--muted); vertical-align: middle; }
 
 .banner { margin: 10px 16px 0; padding: 10px 14px; border-radius: 8px; background: #4a1618; color: #ffd6d8; border: 1px solid #7a2328; }
 .toast { position: fixed; right: 16px; bottom: 16px; padding: 10px 14px; border-radius: 8px; background: #222835; border: 1px solid var(--line); max-width: 420px; z-index: 10; }

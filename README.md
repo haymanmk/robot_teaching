@@ -95,7 +95,8 @@ uv run robot-teaching plan programs/example_pick_place.json --csv /tmp/traj.csv
    `programs/<name>.json`.
 5. **Plan (preview)** shows the planned duration and arrival times. **▶ Play** runs the
    program from the current pose (hold mode only). The speed slider works live; **■ Stop**
-   ramps the speed to zero and holds.
+   ramps the speed to zero and holds. **Space** (outside text fields) or **Esc** (anywhere)
+   triggers the same graceful stop while the page has keyboard focus.
 
 Point semantics: a point's motion type describes how it is *reached* from the previous
 point (the first point from wherever the arm is). A **joint** point can be a **blend**
