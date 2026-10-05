@@ -137,3 +137,16 @@ def test_trajectory_sampling_and_concat():
     assert c.duration == 3.0 and len(c.t) == 4 and c.q[-1, 0] == 2.0
     with pytest.raises(ValueError):
         Trajectory(np.array([0.0, 0.0]), np.zeros((2, 1)), np.zeros((2, 1)))
+
+
+def test_linear_move_may_start_on_a_joint_limit(model, cfg):
+    """The home pose (URDF zero) has joints 2 and 3 on their lower limit; a linear move away from it must plan."""
+    home = np.zeros(6)
+    prog = Program()
+    prog.add(TaughtPoint(q=[0.0, 0.25, 0.35, 0.0, 0.0, 0.0], motion="linear", speed=0.5))
+    traj = plan_program(model, prog, home, cfg, gripper_start=0.0)
+    assert traj.duration > 0 and np.min(traj.q[:, 1]) >= -1e-9 and np.min(traj.q[:, 2]) >= -1e-9
+    pa, pb = model.fk(home).translation, model.fk(np.array(prog.points[0].q)).translation
+    for s in np.linspace(0, traj.duration, 30):
+        pm = model.fk(traj.sample(s)[0]).translation
+        assert np.linalg.norm(np.cross(pm - pa, pb - pa)) / np.linalg.norm(pb - pa) < 1e-4

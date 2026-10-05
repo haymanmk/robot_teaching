@@ -73,7 +73,11 @@ def plan_linear_segment(
     margin: float = 0.0,
     t_min: float = 0.05,
 ) -> Trajectory:
-    """Plan a rest-to-rest straight-line move from ``q_start`` to the pose of ``q_end``."""
+    """Plan a rest-to-rest straight-line move from ``q_start`` to the pose of ``q_end``.
+
+    ``margin`` is kept for call compatibility; the path is checked against the hard joint
+    limits (see below), the margin being a property of taught points.
+    """
     q_start = np.asarray(q_start, dtype=float)[: model.n]
     q_end = np.asarray(q_end, dtype=float)[: model.n]
     T0, T1 = model.fk(q_start), model.fk(q_end)
@@ -89,8 +93,17 @@ def plan_linear_segment(
             raise PlanningError(f"linear move is not reachable (IK failed at {frac:.0%} of the path)")
         t = np.array([p.time for p in pts])
         q = np.array([p.q[: model.n] for p in pts])
-        if not all(model.within_limits(row, margin) for row in q):
-            raise PlanningError("linear move leaves the joint limits; use a joint move instead")
+        # The path only has to respect the hard limits (the tracker clamps to them and reports a
+        # tracking failure if the line needs more). The safety margin applies to taught points,
+        # which the program validation enforces; the move may start on a limit, e.g. at the
+        # fully extended home pose where joints 2 and 3 sit at their lower limit.
+        bad = [i for i, row in enumerate(q) if not model.within_limits(row, 0.0)]
+        if bad:
+            j = int(np.argmax(np.maximum(model.lower - q[bad[0]], q[bad[0]] - model.upper)))
+            raise PlanningError(
+                f"linear move leaves the joint limits (joint {j + 1} at {bad[0] / max(1, len(q) - 1):.0%} "
+                "of the path); use a joint move instead"
+            )
         qd = np.gradient(q, t, axis=0)
         qd[0] = 0.0
         qd[-1] = 0.0
