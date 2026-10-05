@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from ..config import TeachingConfig, resolve_vector
 from ..controller import Mode, TeachController
-from ..model import RobotModel
+from ..model import Pose, RobotModel
 from ..planning import PlanningError, plan_program
 from ..program import Program, ProgramStore, TaughtPoint
 
@@ -83,7 +83,7 @@ class NewProgramRequest(BaseModel):
 
 
 class DisconnectRequest(BaseModel):
-    park: bool = True       # move to the rest pose and wait before switching the motors off
+    home: bool = True       # move home and wait before switching the motors off
 
 
 class PlaybackRequest(BaseModel):
@@ -115,6 +115,9 @@ class AppState:
         self.dirty = False
         self.backend_name = backend_name
         self.last_plan: dict | None = None
+        self.home_q = resolve_vector(cfg.home.q, controller.n, "home.q")
+        with self.model_lock:
+            self.T_home = self.model.fk(self.home_q)
 
     # -- helpers --------------------------------------------------------------
 
@@ -131,6 +134,10 @@ class AppState:
     def pose_dict(self, q) -> dict:
         with self.model_lock:
             return self.model.pose(np.asarray(q, float)).to_dict()
+
+    def pose_home_dict(self, q) -> dict:
+        with self.model_lock:
+            return Pose.relative(self.T_home, self.model.fk(np.asarray(q, float))).to_dict()
 
     def touch(self) -> None:
         self.rev += 1
@@ -171,16 +178,13 @@ class AppState:
         except PlanningError as e:
             raise HTTPException(400, f"planning failed: {e}")
 
-    # -- parking --------------------------------------------------------------
+    # -- home -----------------------------------------------------------------
 
-    def park_pose(self) -> np.ndarray:
-        return resolve_vector(self.cfg.park.pose, self.controller.n, "park.pose")
-
-    def park_trajectory(self, q_start: np.ndarray, gripper: float, speed: float | None = None):
-        """Plan the joint move to the rest pose (without the joint-limit margin: the rest pose may sit on a limit)."""
-        single = Program(name="park", points=[TaughtPoint(
-            q=self.park_pose().tolist(), gripper=gripper, name="park", motion="joint",
-            speed=speed if speed is not None else self.cfg.park.speed,
+    def home_trajectory(self, q_start: np.ndarray, gripper: float, speed: float | None = None):
+        """Plan the joint move home (without the joint-limit margin: the home pose may sit on a limit)."""
+        single = Program(name="home", points=[TaughtPoint(
+            q=self.home_q.tolist(), gripper=gripper, name="home", motion="joint",
+            speed=speed if speed is not None else self.cfg.home.speed,
         )])
         no_margin = dataclasses.replace(self.cfg, limits=dataclasses.replace(self.cfg.limits, joint_position_margin=0.0))
         with self.model_lock:
@@ -195,11 +199,11 @@ class AppState:
             time.sleep(0.02)
         return False
 
-    def park_blocking(self, log=None) -> tuple[bool, str]:
-        """Bring the arm to hold, play the park move and wait for it. Used before disconnecting.
+    def home_blocking(self, log=None) -> tuple[bool, str]:
+        """Bring the arm to hold, play the move home and wait for it. Used before disconnecting.
 
-        Returns (ok, message). ``ok`` is True when the arm rests at the park pose or
-        there is nothing to park (not connected, motors already disabled).
+        Returns (ok, message). ``ok`` is True when the arm rests at the home position or
+        there is nothing to move (not connected, motors already disabled).
         """
         ctl = self.controller
         log = log or (lambda _m: None)
@@ -207,7 +211,7 @@ class AppState:
             return True, "not connected"
         s = ctl.snapshot()
         if not s.enabled:
-            return True, "motors are disabled (e-stop); nothing to park"
+            return True, "motors are disabled (e-stop); cannot move home"
         if s.mode == Mode.PLAYBACK.value:
             log("stopping playback")
             ctl.stop_motion()
@@ -217,24 +221,23 @@ class AppState:
         if not self._wait(lambda s: s.mode == Mode.HOLD.value and s.gains_settled and not s.jogging, 5.0):
             return False, "the arm did not settle into hold"
         s = ctl.snapshot()
-        pose = self.park_pose()
-        if np.max(np.abs(s.q_target - pose)) < 1e-3 and np.max(np.abs(s.q - pose)) < 0.05:
-            return True, "already at the rest pose"
+        if np.max(np.abs(s.q_target - self.home_q)) < 1e-3 and np.max(np.abs(s.q - self.home_q)) < 0.05:
+            return True, "already at the home position"
         try:
-            traj = self.park_trajectory(s.q_target, self.gripper_value())
+            traj = self.home_trajectory(s.q_target, self.gripper_value())
         except (PlanningError, ValueError) as e:
-            return False, f"cannot plan the park move: {e}"
+            return False, f"cannot plan the move home: {e}"
         ok, msg = ctl.play(traj, speed=1.0, loop=False)
         if not ok:
-            return False, f"cannot start the park move: {msg}"
-        log(f"parking: {traj.duration:.1f} s move to the rest pose")
+            return False, f"cannot start the move home: {msg}"
+        log(f"moving home: {traj.duration:.1f} s")
         if not self._wait(lambda s: s.mode != Mode.PLAYBACK.value, traj.duration + 5.0):
             ctl.stop_motion()
-            return False, "the park move timed out"
+            return False, "the move home timed out"
         s = ctl.snapshot()
         if s.error:
-            return False, f"controller error while parking: {s.error}"
-        return True, "parked at the rest pose"
+            return False, f"controller error while moving home: {s.error}"
+        return True, "arrived at the home position"
 
 
 def _result(ok_msg: tuple[bool, str], conflict: bool = True) -> dict:
@@ -248,17 +251,17 @@ def _result(ok_msg: tuple[bool, str], conflict: bool = True) -> dict:
 
 def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramStore,
                backend_name: str = "", model: RobotModel | None = None, connect_on_start: bool = True,
-               park_on_shutdown: bool | None = None) -> FastAPI:
+               home_on_shutdown: bool | None = None) -> FastAPI:
     """Build the app.
 
     ``connect_on_start=False`` leaves the arm to be connected from the UI (POST /api/connect).
-    ``park_on_shutdown`` (default ``cfg.park.on_shutdown``) parks the arm at the rest pose and
-    waits for the move before the bus is closed on shutdown (Ctrl+C), since closing the bus
-    disables the motors.
+    ``home_on_shutdown`` (default ``cfg.home.on_shutdown``) moves the arm home and waits for
+    the move before the bus is closed on shutdown (Ctrl+C), since closing the bus disables
+    the motors.
     """
     state = AppState(controller, cfg, store, model, backend_name)
-    if park_on_shutdown is None:
-        park_on_shutdown = bool(cfg.park.on_shutdown)
+    if home_on_shutdown is None:
+        home_on_shutdown = bool(cfg.home.on_shutdown)
 
     def console(msg: str) -> None:
         print(f"[robot-teaching] {msg}", flush=True)
@@ -271,8 +274,8 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
             yield
         finally:
             if controller.is_connected:
-                if park_on_shutdown:
-                    ok, msg = state.park_blocking(log=console)
+                if home_on_shutdown:
+                    ok, msg = state.home_blocking(log=console)
                     console(f"shutdown: {msg}" if ok else f"shutdown: {msg}; disconnecting anyway, the motors will be disabled")
                 controller.shutdown()
                 console("disconnected")
@@ -307,7 +310,8 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
                 "open_position": cfg.gripper.open_position,
             },
             "playback": {"default_speed": cfg.playback.default_speed},
-            "park": {"pose": resolve_vector(cfg.park.pose, n, "park.pose").tolist(), "speed": cfg.park.speed},
+            "home": {"q": state.home_q.tolist(), "speed": cfg.home.speed,
+                     "pose": Pose.from_se3(state.T_home).to_dict()},
             "control_rate": controller.rate,
             "connected": controller.is_connected,
         }
@@ -343,31 +347,31 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
 
     @app.post("/api/disconnect")
     def disconnect(req: DisconnectRequest | None = None):
-        """Park the arm (unless ``park`` is false), then stop the loop and close the bus (motors off)."""
-        park = req.park if req is not None else True
+        """Move the arm home (unless ``home`` is false), then stop the loop and close the bus (motors off)."""
+        home = req.home if req is not None else True
         if not controller.is_connected:
             return {"ok": True, "message": "already disconnected"}
-        if park:
-            ok, msg = state.park_blocking()
+        if home:
+            ok, msg = state.home_blocking()
             if not ok:
-                raise HTTPException(409, f"still connected: {msg}. Fix it, or disconnect with park=false "
+                raise HTTPException(409, f"still connected: {msg}. Fix it, or disconnect with home=false "
                                          "only if the arm is already resting safely")
         elif state.snap().mode == Mode.PLAYBACK.value:
-            raise HTTPException(409, "stop playback before disconnecting without parking")
+            raise HTTPException(409, "stop playback before disconnecting without moving home")
         controller.shutdown()
-        return {"ok": True, "message": ("parked and " if park else "") + "disconnected (motors off)"}
+        return {"ok": True, "message": ("moved home and " if home else "") + "disconnected (motors off)"}
 
-    @app.post("/api/park")
-    def park(req: MoveToRequest):
-        """Start the planned joint move to the configured rest pose (does not wait for it)."""
+    @app.post("/api/home")
+    def go_home(req: MoveToRequest):
+        """Start the planned joint move to the home position (does not wait for it)."""
         state.require_connected()
         s = state.snap()
         if s.mode != Mode.HOLD.value:
-            raise HTTPException(409, "switch to hold mode before parking")
+            raise HTTPException(409, "switch to hold mode before moving home")
         if not s.gains_settled or s.jogging:
             raise HTTPException(409, "wait for the arm to settle")
         try:
-            traj = state.park_trajectory(s.q_target, state.gripper_value(), req.speed)
+            traj = state.home_trajectory(s.q_target, state.gripper_value(), req.speed)
         except (PlanningError, ValueError) as e:
             raise HTTPException(400, f"planning failed: {e}")
         return _result(controller.play(traj, speed=1.0, loop=False)) | {"duration": traj.duration}
@@ -461,6 +465,8 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
     # ── program editing ───────────────────────────────────────────────────
     def program_payload() -> dict:
         d = state.program.to_dict()
+        for p in d["points"]:
+            p["pose_home"] = state.pose_home_dict(p["q"]) if len(p["q"]) == n else None
         d["rev"] = state.rev
         d["dirty"] = state.dirty
         d["problems"] = state.program.validate(state.model.lower, state.model.upper, cfg.limits.joint_position_margin)

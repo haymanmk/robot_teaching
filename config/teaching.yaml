@@ -65,12 +65,13 @@ playback:
   default_speed: 0.5           # initial speed scale (0..1]
   dwell_default: 0.0           # s
 
-park:
-  # Rest pose the Park action moves to before you disconnect (motor rad). Disconnecting
-  # cuts motor torque, so park where the arm can rest. The URDF zero is the extended
-  # rest pose with the gripper on the table (upstream safe_home goes there too).
-  pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+home:
+  # Home position (motor rad). It is the origin of the displayed Cartesian pose (XYZ and
+  # RPY read zero here), the target of the Home button, and where the arm goes before
+  # disconnecting, since closing the bus cuts motor torque. The URDF zero is the extended
+  # rest pose with the gripper on the table (the vendor's safe_home goes there too).
+  q: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   speed: 0.3
-  on_shutdown: true            # Ctrl+C and Disconnect park the arm first, then switch the motors off
+  on_shutdown: true            # Ctrl+C and Disconnect move the arm home first, then switch the motors off
 
 programs_dir: programs

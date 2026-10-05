@@ -76,15 +76,21 @@ With the real arm the server starts **disconnected**: open the UI and press **Co
 when the arm is powered and clear. Connecting opens the bus, switches every motor to MIT
 mode, enables them and holds the current pose with the stiff gains from the vendor's
 hardware YAML. Closing the bus switches the motors off (upstream behaviour), so
-**Disconnect** and **Ctrl+C** first **park** the arm: a planned joint move to the rest pose
-in `config/teaching.yaml` (`park.pose`, default the URDF zero, like the vendor's
+**Disconnect** and **Ctrl+C** first move the arm **home**: a planned joint move to the home
+position in `config/teaching.yaml` (`home.q`, default the URDF zero, like the vendor's
 `safe_home`), waiting for the move to finish before the motors are released. Playback is
-stopped and free drive is left first; an e-stopped arm cannot be parked (its motors are
-already off). If the park move cannot be planned, Disconnect refuses and the arm keeps
-holding; Ctrl+C prints the reason and disconnects anyway. `park.on_shutdown: false` turns
-the shutdown park off, and the **Park** button runs the same move on its own.
-`--connect auto` connects at startup instead; the simulator defaults to `auto` and accepts
-`--connect manual`.
+stopped and free drive is left first; an e-stopped arm cannot move (its motors are already
+off). If the move cannot be planned, Disconnect refuses and the arm keeps holding; Ctrl+C
+prints the reason and disconnects anyway. `home.on_shutdown: false` turns the shutdown move
+off, and the **Go home** button runs the same move on its own. `--connect auto` connects
+at startup instead; the simulator defaults to `auto` and accepts `--connect manual`.
+
+**Home position and the Cartesian readout.** The XYZ/RPY shown in the UI, and the pose
+column of the program, are relative to the home position by default: XYZ is the offset of
+the gripper frame from its home location along the base axes, and RPY is the rotation
+about the base axes from the home orientation, so both read zero at home. The **Base**
+toggle shows the raw pose in the robot base frame instead. Programs store joint angles,
+so this choice never affects playback.
 
 Offline check of a saved program:
 
@@ -132,6 +138,7 @@ planner refuses and suggests a joint move).
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
 | `playback` | default speed scale |
+| `home` | home position (motor rad): Cartesian reference, target of **Go home**, and the pre-disconnect move; its speed and whether to move home on shutdown |
 
 Motor ids, CAN channel, MIT gains and the gravity profiles stay in the vendor's
 `config/rebotarm_rs.yaml`.

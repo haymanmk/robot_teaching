@@ -16,9 +16,9 @@ from conftest import L_POSE
 def _client(cfg, model, tmp_path, connect_on_start=True, backend_cls=SimBackend):
     sim = backend_cls(realtime=False, q0=L_POSE, model=model)
     ctl = TeachController(sim, cfg)
-    # The stepped simulator cannot execute a park move during shutdown; the realtime test covers it.
+    # The stepped simulator cannot execute the move home during shutdown; the realtime test covers it.
     app = create_app(ctl, cfg, ProgramStore(tmp_path), backend_name="sim", model=model,
-                     connect_on_start=connect_on_start, park_on_shutdown=False)
+                     connect_on_start=connect_on_start, home_on_shutdown=False)
     c = TestClient(app)
     c.sim = sim
     c.ctl = ctl
@@ -118,13 +118,13 @@ def test_websocket_stream(client):
     assert "state" in msg and "program_rev" in msg and msg["state"]["mode"] == "hold"
 
 
-def test_manual_connect_park_disconnect(manual_client, cfg):
+def test_manual_connect_home_disconnect(manual_client, cfg):
     c = manual_client
     st = c.get("/api/state").json()["state"]
     assert st["mode"] == "disconnected" and not st["connected"]
     assert c.get("/api/config").json()["connected"] is False
     for path, body in (("/api/mode", {"mode": "hold"}), ("/api/jog/joint", {"joint": 0, "delta": 0.1}),
-                       ("/api/program/points", {}), ("/api/playback/start", {}), ("/api/park", {})):
+                       ("/api/program/points", {}), ("/api/playback/start", {}), ("/api/home", {})):
         r = c.post(path, json=body)
         assert r.status_code == 409 and "not connected" in r.json()["detail"], path
     assert c.post("/api/disconnect").json()["message"] == "already disconnected"
@@ -133,8 +133,8 @@ def test_manual_connect_park_disconnect(manual_client, cfg):
     c.sim.step(200)
     st = c.get("/api/state").json()["state"]
     assert st["mode"] == "hold" and st["connected"] and c.sim.enabled
-    # Park: planned joint move to the rest pose, which sits on the joint-2/3 lower limit.
-    r = c.post("/api/park", json={})
+    # Go home: planned joint move to the home position, which sits on the joint-2/3 lower limit.
+    r = c.post("/api/home", json={})
     assert r.status_code == 200, r.text
     ticks = 0
     while c.get("/api/state").json()["state"]["mode"] == "playback":
@@ -142,10 +142,11 @@ def test_manual_connect_park_disconnect(manual_client, cfg):
         ticks += 50
         assert ticks < 30000
     st = c.get("/api/state").json()["state"]
-    assert np.max(np.abs(np.array(st["q_target"]) - np.array(cfg.park.pose))) < 1e-6
-    c.sim.step(300)                      # let the simulated arm settle on the rest pose
-    r = c.post("/api/disconnect")        # default park=True: already there, so no move is needed
-    assert r.status_code == 200 and r.json()["message"].startswith("parked and"), r.text
+    assert np.max(np.abs(np.array(st["q_target"]) - np.array(cfg.home.q))) < 1e-6
+    assert np.max(np.abs(np.array(st["pose_home"]["xyz"]))) < 2e-3      # at home the relative pose reads zero
+    c.sim.step(300)                      # let the simulated arm settle on the home position
+    r = c.post("/api/disconnect")        # default home=True: already there, so no move is needed
+    assert r.status_code == 200 and r.json()["message"].startswith("moved home and"), r.text
     st = c.get("/api/state").json()["state"]
     assert st["mode"] == "disconnected" and not st["connected"] and not c.sim.enabled
 
@@ -168,17 +169,17 @@ def test_disconnect_refused_during_playback(client):
     client.post("/api/program/points", json={})
     assert client.post("/api/playback/start", json={"speed": 0.5}).status_code == 200
     client.sim.step(100)
-    assert client.post("/api/disconnect", json={"park": False}).status_code == 409
+    assert client.post("/api/disconnect", json={"home": False}).status_code == 409
 
 
-def _near_park_cfg(cfg):
-    pose = (L_POSE + np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0])).tolist()
-    return dataclasses.replace(cfg, park=dataclasses.replace(cfg.park, pose=pose, speed=1.0, on_shutdown=True))
+def _near_home_cfg(cfg):
+    q = (L_POSE + np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0])).tolist()
+    return dataclasses.replace(cfg, home=dataclasses.replace(cfg.home, q=q, speed=1.0, on_shutdown=True))
 
 
-def test_disconnect_and_shutdown_park_first(cfg, model, tmp_path):
-    """Realtime simulator: Disconnect parks (from free drive) and so does the lifespan shutdown (Ctrl+C)."""
-    near = _near_park_cfg(cfg)
+def test_disconnect_and_shutdown_move_home_first(cfg, model, tmp_path):
+    """Realtime simulator: Disconnect moves home (from free drive) and so does the lifespan shutdown (Ctrl+C)."""
+    near = _near_home_cfg(cfg)
     sim = SimBackend(realtime=True, q0=L_POSE, model=model)
     ctl = TeachController(sim, near)
     app = create_app(ctl, near, ProgramStore(tmp_path), backend_name="sim", model=model)
@@ -188,31 +189,44 @@ def test_disconnect_and_shutdown_park_first(cfg, model, tmp_path):
         time.sleep(0.8)
         t0 = time.monotonic()
         r = c.post("/api/disconnect")
-        assert r.status_code == 200 and r.json()["message"] == "parked and disconnected (motors off)", r.text
+        assert r.status_code == 200 and r.json()["message"] == "moved home and disconnected (motors off)", r.text
         assert time.monotonic() - t0 > 0.3            # it waited for the hold fade and the move
         q, _ = sim.read_positions()
-        assert np.max(np.abs(q - near.park.pose)) < 0.03 and not sim.enabled
-        # Reconnect, jog away, and let the context exit (lifespan shutdown) park again.
+        assert np.max(np.abs(q - near.home.q)) < 0.03 and not sim.enabled
+        # Reconnect, jog away, and let the context exit (lifespan shutdown) move home again.
         assert c.post("/api/connect").status_code == 200
         time.sleep(0.3)
         assert c.post("/api/jog/joint", json={"joint": 0, "delta": -0.15}).status_code == 200
         time.sleep(0.8)
     q, _ = sim.read_positions()
-    assert np.max(np.abs(q - near.park.pose)) < 0.03 and not sim.enabled and not ctl.is_connected
+    assert np.max(np.abs(q - near.home.q)) < 0.03 and not sim.enabled and not ctl.is_connected
 
 
-def test_disconnect_refuses_when_park_cannot_be_planned(cfg, model, tmp_path):
-    bad = dataclasses.replace(cfg, park=dataclasses.replace(cfg.park, pose=[0.0, -1.0, 0.0, 0.0, 0.0, 0.0]))
+def test_disconnect_refuses_when_home_cannot_be_planned(cfg, model, tmp_path):
+    bad = dataclasses.replace(cfg, home=dataclasses.replace(cfg.home, q=[0.0, -1.0, 0.0, 0.0, 0.0, 0.0]))
     sim = SimBackend(realtime=True, q0=L_POSE, model=model)
     ctl = TeachController(sim, bad)
-    app = create_app(ctl, bad, ProgramStore(tmp_path), backend_name="sim", model=model, park_on_shutdown=False)
+    app = create_app(ctl, bad, ProgramStore(tmp_path), backend_name="sim", model=model, home_on_shutdown=False)
     with TestClient(app) as c:
         time.sleep(0.3)
         r = c.post("/api/disconnect")
-        assert r.status_code == 409 and "cannot plan the park move" in r.json()["detail"]
+        assert r.status_code == 409 and "cannot plan the move home" in r.json()["detail"]
         assert ctl.is_connected and sim.enabled
-        assert c.post("/api/disconnect", json={"park": False}).status_code == 200
+        assert c.post("/api/disconnect", json={"home": False}).status_code == 200
     assert not ctl.is_connected
+
+
+def test_home_frame_pose(client, cfg, model):
+    c = client.get("/api/config").json()
+    assert c["home"]["q"] == [0.0] * 6 and "xyz" in c["home"]["pose"]
+    st = client.get("/api/state").json()["state"]
+    T_home, T = model.fk(np.zeros(6)), model.fk(np.array(st["q"]))
+    assert np.allclose(st["pose_home"]["xyz"], T.translation - T_home.translation, atol=1e-6)
+    assert np.allclose(st["pose"]["xyz"], T.translation, atol=1e-6)
+    client.post("/api/program/points", json={})
+    p = client.get("/api/program").json()["points"][0]
+    assert np.allclose(p["pose_home"]["xyz"], st["pose_home"]["xyz"], atol=2e-3)
+    assert np.allclose(p["pose"]["xyz"], st["pose"]["xyz"], atol=2e-3)
 
 
 def test_gripper_controls_in_free_drive(client):

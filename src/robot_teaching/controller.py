@@ -65,6 +65,7 @@ class Snapshot:
     qd: np.ndarray
     q_target: np.ndarray
     pose: Pose | None
+    pose_home: Pose | None
     gripper: float | None
     gripper_target: float | None
     gripper_hand: bool
@@ -87,6 +88,7 @@ class Snapshot:
             "qd": self.qd.tolist(),
             "q_target": self.q_target.tolist(),
             "pose": self.pose.to_dict() if self.pose is not None else None,
+            "pose_home": self.pose_home.to_dict() if self.pose_home is not None else None,
             "gripper": self.gripper,
             "gripper_target": self.gripper_target,
             "gripper_hand": self.gripper_hand,
@@ -141,6 +143,8 @@ class TeachController:
         self._gripper_hand_kd = float(cfg.gripper.hand_kd)
         self._margin = float(cfg.limits.joint_position_margin)
         self._jog_vel = float(cfg.jog.joint_velocity)
+        self.home_q = resolve_vector(cfg.home.q, n, "home.q")
+        self.T_home = self.model.fk(self.home_q)        # reference frame of the displayed pose
 
         # Control-thread state.
         self._mode = Mode.DISCONNECTED
@@ -230,7 +234,7 @@ class TeachController:
         """Stop the loop and close the bus.
 
         The upstream actuator disables every motor when it disconnects, so on the
-        real arm this is torque-off: park the arm first.
+        real arm this is torque-off: move the arm home first.
         """
         if not self._started:
             return
@@ -614,9 +618,11 @@ class TeachController:
                 "stopping": pb.stopping,
             }
         try:
-            pose = self.model.pose(self._q)
+            T = self.model.fk(self._q)
+            pose = Pose.from_se3(T)
+            pose_home = Pose.relative(self.T_home, T)
         except Exception:
-            pose = None
+            pose = pose_home = None
         snap = Snapshot(
             time=time.time(),
             mode=self._mode.value,
@@ -626,6 +632,7 @@ class TeachController:
             qd=self._qd.copy(),
             q_target=self._q_target.copy(),
             pose=pose,
+            pose_home=pose_home,
             gripper=self._gripper,
             gripper_target=self._gripper_target,
             gripper_hand=self._gripper_hand,

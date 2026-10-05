@@ -17,7 +17,7 @@
   </div>
   <div class="actions">
     <button id="btn-connect" class="btn big blue" title="open the CAN bus, switch the motors to MIT mode, enable them and hold">Connect</button>
-    <button id="btn-disconnect" class="btn big hidden" title="close the bus; the motors are disabled, so park the arm first">Disconnect</button>
+    <button id="btn-disconnect" class="btn big hidden" title="move the arm home, then close the bus (the motors are disabled)">Disconnect</button>
     <button id="btn-free" class="btn big amber">Free drive</button>
     <button id="btn-hold" class="btn big green">Hold</button>
     <button id="btn-stop" class="btn big" title="Space or Esc">Stop motion <kbd>Space</kbd></button>
@@ -38,6 +38,13 @@
       <thead><tr><th>Joint</th><th>Angle</th><th>Target</th><th>Vel</th><th>g(q)</th></tr></thead>
       <tbody></tbody>
     </table>
+    <div class="row pose-frame-row">
+      <label>Pose relative to</label>
+      <div class="seg" id="pose-frame">
+        <button data-frame="home" class="on" title="XYZ offset from the home position along the base axes; RPY = rotation about the base axes from the home orientation">Home</button>
+        <button data-frame="base" title="raw pose of the gripper frame in the robot base frame">Base</button>
+      </div>
+    </div>
     <div class="pose">
       <div><span class="k">X</span><span id="pose-x">—</span><span class="u">mm</span></div>
       <div><span class="k">Y</span><span id="pose-y">—</span><span class="u">mm</span></div>
@@ -69,7 +76,7 @@
       <button class="btn big" id="btn-pb-stop">■ Stop</button>
     </div>
     <div class="row">
-      <button class="btn" id="btn-park" title="planned move to the rest pose (config: park.pose); do this before Disconnect">Park (rest pose)</button>
+      <button class="btn" id="btn-home" title="planned move to the home position (config: home.q); Disconnect and Ctrl+C do this first">Go home</button>
     </div>
     <div class="progress"><div id="pb-bar"></div></div>
     <div class="kv">
@@ -80,7 +87,7 @@
     <pre id="plan-summary" class="plan hidden"></pre>
     <h3>Safety notes</h3>
     <ul class="notes">
-      <li><b>Connect</b> enables the motors and holds the pose; <b>Disconnect</b> and Ctrl+C park the arm at the rest pose, then switch the motors off.</li>
+      <li><b>Connect</b> enables the motors and holds the pose; <b>Disconnect</b> and Ctrl+C move the arm home, then switch the motors off.</li>
       <li>Playback starts from <b>hold</b> mode only, from where the arm is.</li>
       <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
       <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>
@@ -153,7 +160,7 @@
     <div class="table-wrap">
     <table class="points" id="points-table">
       <thead>
-        <tr><th>#</th><th>Name</th><th>Motion</th><th>Speed %</th><th>Blend</th><th>Dwell s</th><th>Gripper</th><th>Pose (mm)</th><th></th></tr>
+        <tr><th>#</th><th>Name</th><th>Motion</th><th>Speed %</th><th>Blend</th><th>Dwell s</th><th>Gripper</th><th id="pose-col-head">Pose (mm, home)</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>

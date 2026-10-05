@@ -12,6 +12,8 @@
   let jointStep = 1.0, cartStepLin = 0.005, cartStepAng = 2.0, cartFrame = "base";
   let sliderBusy = false;
   let lastProgError = "";
+  let poseFrame = "home";                       // "home": relative to the home position; "base": raw base frame
+  try { poseFrame = localStorage.getItem("poseFrame") || "home"; } catch (_) { /* storage blocked */ }
 
   // ── API ────────────────────────────────────────────────────────────────
   async function api(method, path, body) {
@@ -124,8 +126,9 @@
       $(`jv${i}`).textContent = fmt(deg(state.qd[i]), 1);
       $(`jg${i}`).textContent = fmt(state.tau_g[i], 2);
     });
-    if (state.pose) {
-      const [x, y, z] = state.pose.xyz, [r, p, w] = state.pose.rpy;
+    const shown = poseFrame === "home" ? state.pose_home : state.pose;
+    if (shown) {
+      const [x, y, z] = shown.xyz, [r, p, w] = shown.rpy;
       $("pose-x").textContent = fmt(x * 1000); $("pose-y").textContent = fmt(y * 1000); $("pose-z").textContent = fmt(z * 1000);
       $("pose-r").textContent = fmt(deg(r)); $("pose-p").textContent = fmt(deg(p)); $("pose-w").textContent = fmt(deg(w));
     }
@@ -156,7 +159,7 @@
     $("btn-estop").disabled = disc;
     $("btn-play").disabled = disc || !hold || !state.gains_settled || state.jogging;
     $("btn-plan").disabled = disc || !hold;
-    $("btn-park").disabled = disc || !hold || !state.gains_settled || state.jogging;
+    $("btn-home").disabled = disc || !hold || !state.gains_settled || state.jogging;
     $("btn-pb-stop").disabled = !play;
     $("btn-record").disabled = disc || off || play;
 
@@ -183,9 +186,11 @@
     $("prog-dirty").textContent = program.dirty ? "• unsaved" : "";
     const tb = $("points-table").querySelector("tbody");
     tb.innerHTML = "";
+    $("pose-col-head").textContent = `Pose (mm, ${poseFrame})`;
     program.points.forEach((p, i) => {
       const tr = document.createElement("tr");
-      const pose = p.pose ? p.pose.xyz.map((v) => (v * 1000).toFixed(0)).join(", ") : "—";
+      const pp = poseFrame === "home" ? p.pose_home : p.pose;
+      const pose = pp ? pp.xyz.map((v) => (v * 1000).toFixed(0)).join(", ") : "—";
       tr.innerHTML = `
         <td>${i + 1}</td>
         <td><input class="pname" value="${escapeHtml(p.name)}"></td>
@@ -247,21 +252,30 @@
 
   // ── wiring ─────────────────────────────────────────────────────────────
   function wire() {
+    [...$("pose-frame").children].forEach((b) => {
+      b.classList.toggle("on", b.dataset.frame === poseFrame);
+      b.onclick = () => {
+        poseFrame = b.dataset.frame;
+        try { localStorage.setItem("poseFrame", poseFrame); } catch (_) { /* storage blocked */ }
+        [...$("pose-frame").children].forEach((c) => c.classList.toggle("on", c === b));
+        renderProgram();
+      };
+    });
     $("btn-connect").onclick = async () => {
       $("btn-connect").disabled = true; toast("connecting…");
       try { await act("POST", "/api/connect", undefined, "connected, holding the current pose"); }
       finally { $("btn-connect").disabled = false; }
     };
     $("btn-disconnect").onclick = async () => {
-      if (!confirm("Disconnect parks the arm at the rest pose, waits for the move, then switches the motors off.\nKeep clear of the arm. Continue?")) return;
-      toast("parking, then disconnecting…");
+      if (!confirm("Disconnect moves the arm home, waits for the move, then switches the motors off.\nKeep clear of the arm. Continue?")) return;
+      toast("moving home, then disconnecting…");
       $("btn-disconnect").disabled = true;
-      try { await act("POST", "/api/disconnect", { park: true }); }
+      try { await act("POST", "/api/disconnect", { home: true }); }
       finally { $("btn-disconnect").disabled = false; }
     };
-    $("btn-park").onclick = async () => {
-      const r = await act("POST", "/api/park", {}, false);
-      if (r) toast(`parking: ${r.duration.toFixed(1)} s move to the rest pose`);
+    $("btn-home").onclick = async () => {
+      const r = await act("POST", "/api/home", {}, false);
+      if (r) toast(`moving home: ${r.duration.toFixed(1)} s`);
     };
     $("btn-free").onclick = () => act("POST", "/api/mode", { mode: "free_drive" }, "free drive: gains fading in");
     $("btn-hold").onclick = () => act("POST", "/api/mode", { mode: "hold" }, "holding");

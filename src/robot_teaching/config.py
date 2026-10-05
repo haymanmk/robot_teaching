@@ -91,10 +91,12 @@ class GripperConfig:
 
 
 @dataclass
-class ParkConfig:
-    pose: Any = 0.0        # rad, scalar or one value per joint; the URDF zero is the extended rest pose
-    speed: float = 0.3
-    on_shutdown: bool = True   # park before disconnecting (Ctrl+C and the Disconnect action)
+class HomeConfig:
+    """The home position: origin of the displayed Cartesian pose, target of the Home move,
+    and where the arm goes before disconnecting (closing the bus disables the motors)."""
+    q: Any = 0.0               # rad, scalar or one value per joint; the URDF zero is the extended rest pose
+    speed: float = 0.3         # speed scale of the move home
+    on_shutdown: bool = True   # move home before disconnecting (Ctrl+C and the Disconnect action)
 
 
 @dataclass
@@ -112,7 +114,7 @@ class TeachingConfig:
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
-    park: ParkConfig = field(default_factory=ParkConfig)
+    home: HomeConfig = field(default_factory=HomeConfig)
     programs_dir: str = "programs"
     source_path: Path | None = None
 
@@ -146,7 +148,7 @@ _SECTIONS = {
     "jog": JogConfig,
     "gripper": GripperConfig,
     "playback": PlaybackConfig,
-    "park": ParkConfig,
+    "home": HomeConfig,
 }
 
 
@@ -156,6 +158,11 @@ def load_config(path: str | Path | None = None) -> TeachingConfig:
     data: dict = {}
     if cfg_path.exists():
         data = yaml.safe_load(cfg_path.read_text()) or {}
+    if "home" not in data and isinstance(data.get("park"), dict):
+        # Older configs called the home position "park".
+        park = data["park"]
+        data["home"] = {"q": park.get("pose", 0.0), "speed": park.get("speed", 0.3),
+                        "on_shutdown": park.get("on_shutdown", True)}
     cfg = TeachingConfig()
     for key, cls in _SECTIONS.items():
         setattr(cfg, key, _build(cls, data.get(key)))

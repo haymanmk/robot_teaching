@@ -38,6 +38,15 @@ class Pose:
     def to_se3(self) -> pin.SE3:
         return pin.SE3(pin.rpy.rpyToMatrix(*[float(v) for v in self.rpy]), np.asarray(self.xyz, dtype=float))
 
+    @classmethod
+    def relative(cls, T_ref: pin.SE3, T: pin.SE3) -> "Pose":
+        """``T`` seen from the reference pose: position offset along the base axes, and the
+        orientation as the rotation about the base axes that takes ``T_ref`` to ``T``
+        (``R · R_refᵀ``). Both read zero when ``T == T_ref``; yaw stays a rotation about
+        the vertical even when the tool points down at the reference."""
+        return cls(xyz=T.translation - T_ref.translation,
+                   rpy=pin.rpy.matrixToRpy(T.rotation @ T_ref.rotation.T))
+
 
 class RobotModel:
     """Arm model with FK, IK, Jacobian, gravity vector and joint limits."""
