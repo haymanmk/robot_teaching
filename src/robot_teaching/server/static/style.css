@@ -40,10 +40,15 @@ kbd { font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 
 .toast { position: fixed; right: 16px; bottom: 16px; padding: 10px 14px; border-radius: 8px; background: #222835; border: 1px solid var(--line); max-width: 420px; z-index: 10; }
 .toast.err { background: #4a1618; border-color: #7a2328; }
 
-.grid { display: grid; grid-template-columns: 1fr 1.6fr 1fr; gap: 14px; padding: 14px 16px; align-items: start; }
-@media (max-width: 1200px) { .grid { grid-template-columns: 1fr 1fr; } .card.wide { grid-column: 1 / -1; } }
-@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+/* Three columns: status (state + playback) | fine adjustment | program.
+   min-width: 0 on the grid items keeps a wide table from stretching a column past the viewport. */
+.grid { display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(340px, 1fr) minmax(460px, 1.7fr); gap: 14px; padding: 14px 16px; align-items: start; }
+.grid > * { min-width: 0; }
+.col { display: flex; flex-direction: column; gap: 14px; }
+@media (max-width: 1400px) { .grid { grid-template-columns: minmax(280px, 1fr) minmax(340px, 1fr); } .card.program { grid-column: 1 / -1; } }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+.table-wrap { overflow-x: auto; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 .card-head h2 { margin: 0; }
 .file-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -88,8 +93,8 @@ input[type=number], input.inline, select { background: #0f1218; color: var(--tex
 input[type=number] { width: 68px; }
 input.inline { width: 160px; font-weight: 600; }
 .points td { white-space: nowrap; }
-.points input[type=number] { width: 60px; }
-.points input.pname { width: 90px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+.points input[type=number] { width: 62px; }
+.points input.pname { width: 84px; background: #0f1218; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
 .points tr.current { background: #14305e; }
 .points tr.current td { color: #fff; }
 .points .mini { padding: 3px 7px; min-height: 26px; font-size: 12px; }

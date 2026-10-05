@@ -30,8 +30,9 @@
 <div id="toast" class="toast hidden"></div>
 
 <main class="grid">
-  <!-- ───────────── column 1: state + jog ───────────── -->
-  <section class="card">
+  <!-- ───────────── left column: status + playback ───────────── -->
+  <div class="col">
+  <section class="card" id="state-card">
     <h2>Robot state</h2>
     <table class="joints" id="joint-table">
       <thead><tr><th>Joint</th><th>Angle</th><th>Target</th><th>Vel</th><th>g(q)</th></tr></thead>
@@ -52,6 +53,43 @@
     </div>
   </section>
 
+  <section class="card" id="playback-card">
+    <h2>Playback</h2>
+    <div class="row">
+      <label>Speed <b id="pb-speed-val">50</b> %</label>
+      <input type="range" id="pb-speed" min="5" max="100" step="5" value="50">
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="pb-loop"> Loop</label>
+      <label>Start from <select id="pb-start"></select></label>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-plan">Plan (preview)</button>
+      <button class="btn big green" id="btn-play">▶ Play</button>
+      <button class="btn big" id="btn-pb-stop">■ Stop</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-park" title="planned move to the rest pose (config: park.pose); do this before Disconnect">Park (rest pose)</button>
+    </div>
+    <div class="progress"><div id="pb-bar"></div></div>
+    <div class="kv">
+      <span><b id="pb-elapsed">0.0</b> / <b id="pb-duration">0.0</b> s</span>
+      <span>point <b id="pb-point">—</b></span>
+      <span>laps <b id="pb-laps">0</b></span>
+    </div>
+    <pre id="plan-summary" class="plan hidden"></pre>
+    <h3>Safety notes</h3>
+    <ul class="notes">
+      <li><b>Connect</b> enables the motors and holds the pose; <b>Disconnect</b> and Ctrl+C park the arm at the rest pose, then switch the motors off.</li>
+      <li>Playback starts from <b>hold</b> mode only, from where the arm is.</li>
+      <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
+      <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>
+      <li>Start free drive from a clearance pose; contact with the table corrupts the gravity model.</li>
+    </ul>
+  </section>
+  </div>
+
+  <!-- ───────────── centre column: fine adjustment ───────────── -->
   <section class="card" id="jog-card">
     <h2>Fine adjustment</h2>
     <div id="jog-controls">
@@ -90,8 +128,8 @@
     </div>
   </section>
 
-  <!-- ───────────── column 2: program ───────────── -->
-  <section class="card wide">
+  <!-- ───────────── right column: program (the taught points) ───────────── -->
+  <section class="card program">
     <div class="card-head">
       <h2>Program <input id="prog-name" class="inline" value="untitled"> <span id="prog-dirty" class="muted small"></span></h2>
       <div class="file-actions">
@@ -112,50 +150,16 @@
       <label>Dwell <input type="number" id="rec-dwell" min="0" step="0.1" value="0"> s</label>
     </div>
 
+    <div class="table-wrap">
     <table class="points" id="points-table">
       <thead>
         <tr><th>#</th><th>Name</th><th>Motion</th><th>Speed %</th><th>Blend</th><th>Dwell s</th><th>Gripper</th><th>Pose (mm)</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
+    </div>
     <div id="prog-problems" class="problems hidden"></div>
     <p class="hint">Record in <b>free drive</b> by dragging the arm, or in <b>hold</b> after fine adjustment. A <i>linear</i> point is reached on a straight line; a <i>blend</i> point is passed through without stopping (joint moves only). The gripper target is applied on arrival.</p>
-  </section>
-
-  <!-- ───────────── column 3: playback ───────────── -->
-  <section class="card">
-    <h2>Playback</h2>
-    <div class="row">
-      <label>Speed <b id="pb-speed-val">50</b> %</label>
-      <input type="range" id="pb-speed" min="5" max="100" step="5" value="50">
-    </div>
-    <div class="row">
-      <label><input type="checkbox" id="pb-loop"> Loop</label>
-      <label>Start from <select id="pb-start"></select></label>
-    </div>
-    <div class="row">
-      <button class="btn" id="btn-plan">Plan (preview)</button>
-      <button class="btn big green" id="btn-play">▶ Play</button>
-      <button class="btn big" id="btn-pb-stop">■ Stop</button>
-    </div>
-    <div class="row">
-      <button class="btn" id="btn-park" title="planned move to the rest pose (config: park.pose); do this before Disconnect">Park (rest pose)</button>
-    </div>
-    <div class="progress"><div id="pb-bar"></div></div>
-    <div class="kv">
-      <span><b id="pb-elapsed">0.0</b> / <b id="pb-duration">0.0</b> s</span>
-      <span>point <b id="pb-point">—</b></span>
-      <span>laps <b id="pb-laps">0</b></span>
-    </div>
-    <pre id="plan-summary" class="plan hidden"></pre>
-    <h3>Safety notes</h3>
-    <ul class="notes">
-      <li><b>Connect</b> enables the motors and holds the pose; <b>Disconnect</b> and Ctrl+C park the arm at the rest pose, then switch the motors off.</li>
-      <li>Playback starts from <b>hold</b> mode only, from where the arm is.</li>
-      <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
-      <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>
-      <li>Start free drive from a clearance pose; contact with the table corrupts the gravity model.</li>
-    </ul>
   </section>
 </main>
 <script src="/static/app.js"></script>
