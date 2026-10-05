@@ -16,7 +16,7 @@ from typing import Literal
 
 import numpy as np
 import pinocchio as pin
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -464,6 +464,16 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         return _result(controller.stop_motion())
 
     # ── UI ────────────────────────────────────────────────────────────────
+    @app.middleware("http")
+    async def revalidate_ui_files(request: Request, call_next):
+        # The page, script and stylesheet change together; a browser must not run a
+        # cached script against a newer page. "no-cache" forces an ETag revalidation.
+        response = await call_next(request)
+        path = request.url.path
+        if path == "/" or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     if STATIC_DIR.exists():
         @app.get("/", include_in_schema=False)
         def index():
