@@ -72,7 +72,11 @@ td:first-child, th:first-child { text-align: left; }
 .jog button { min-height: 38px; font-size: 16px; }
 #jog-card.off { opacity: .45; pointer-events: none; }
 
-.gripper-row input[type=range] { flex: 1; min-width: 120px; }
+.gripper-row { flex-wrap: nowrap; }
+.grip-slider-wrap { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }
+.grip-slider-wrap input[type=range] { width: 100%; margin: 0; }
+.grip-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.grip-ends span:nth-child(2) { color: var(--text); }
 
 .record-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px; background: #11141a; border-radius: 8px; margin-bottom: 10px; }
 .record-bar label { color: var(--muted); display: flex; align-items: center; gap: 6px; }

@@ -88,15 +88,24 @@
       plus.onclick = () => act("POST", "/api/jog/cartesian", { axis, delta: step(), frame: cartFrame }, false);
       cj.appendChild(d);
     });
-    const g = config.gripper;
-    const lo = Math.min(g.closed_position, g.open_position), hi = Math.max(g.closed_position, g.open_position);
-    const s = $("grip-slider"); s.min = lo; s.max = hi; s.step = (hi - lo) / 100;
-    s.oninput = () => { sliderBusy = true; $("grip-slider-val").textContent = fmt(s.value, 2); };
-    s.onchange = () => { act("POST", "/api/gripper", { position: parseFloat(s.value) }, false); sliderBusy = false; };
+    // The slider is "percent open": left end = closed position, right end = open position,
+    // whatever the motor angles are, so it always moves toward the button that was pressed.
+    const s = $("grip-slider");
+    s.oninput = () => { sliderBusy = true; $("grip-slider-val").textContent = gripLabel(s.value / 100); };
+    s.onchange = () => { act("POST", "/api/gripper", { position: gripPosition(s.value / 100) }, false); sliderBusy = false; };
     $("btn-grip-open").onclick = () => act("POST", "/api/gripper", { action: "open" }, "gripper opening");
     $("btn-grip-close").onclick = () => act("POST", "/api/gripper", { action: "close" }, "gripper closing");
-    if (!g.has_gripper) document.querySelector(".gripper-row").classList.add("hidden");
+    if (!config.gripper.has_gripper) document.querySelector(".gripper-row").classList.add("hidden");
   }
+
+  // ── gripper helpers (0 = closed, 1 = open) ─────────────────────────────
+  const gripPosition = (frac) => config.gripper.closed_position + frac * (config.gripper.open_position - config.gripper.closed_position);
+  function gripFraction(pos) {
+    const span = config.gripper.open_position - config.gripper.closed_position;
+    if (Math.abs(span) < 1e-9) return 0;
+    return Math.min(1, Math.max(0, (pos - config.gripper.closed_position) / span));
+  }
+  const gripLabel = (frac) => `${Math.round(frac * 100)} % open (${fmt(gripPosition(frac), 2)} rad)`;
 
   // ── state rendering ────────────────────────────────────────────────────
   function renderState() {
@@ -123,7 +132,11 @@
     $("gripper-pos").textContent = fmt(state.gripper, 2);
     $("gripper-target").textContent = fmt(state.gripper_target, 2);
     $("tick-dt").textContent = `${fmt(state.tick_dt * 1000, 2)} ms`;
-    if (!sliderBusy && state.gripper_target !== null) { $("grip-slider").value = state.gripper_target; $("grip-slider-val").textContent = fmt(state.gripper_target, 2); }
+    if (!sliderBusy && state.gripper_target !== null) {
+      const frac = gripFraction(state.gripper_target);
+      $("grip-slider").value = Math.round(frac * 100);
+      $("grip-slider-val").textContent = gripLabel(frac);
+    }
 
     const hold = state.mode === "hold", free = state.mode === "free_drive", play = state.mode === "playback", off = state.mode === "disabled";
     $("jog-card").classList.toggle("off", !hold || !state.gains_settled);

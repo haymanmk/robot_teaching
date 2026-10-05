@@ -71,10 +71,12 @@
 
     <h3>Gripper</h3>
     <div class="row gripper-row">
-      <button class="btn" id="btn-grip-open">Open</button>
-      <input type="range" id="grip-slider" min="0" max="1" step="0.01" value="0">
-      <button class="btn" id="btn-grip-close">Close</button>
-      <span class="small muted" id="grip-slider-val"></span>
+      <button class="btn" id="btn-grip-close" title="fully closed = slider at the left end">Close</button>
+      <div class="grip-slider-wrap">
+        <input type="range" id="grip-slider" min="0" max="100" step="1" value="0" aria-label="gripper opening, percent">
+        <div class="grip-ends"><span>closed</span><span id="grip-slider-val">—</span><span>open</span></div>
+      </div>
+      <button class="btn" id="btn-grip-open" title="fully open = slider at the right end">Open</button>
     </div>
   </section>
 
