@@ -95,6 +95,7 @@
     s.onchange = () => { act("POST", "/api/gripper", { position: gripPosition(s.value / 100) }, false); sliderBusy = false; };
     $("btn-grip-open").onclick = () => act("POST", "/api/gripper", { action: "open" }, "gripper opening");
     $("btn-grip-close").onclick = () => act("POST", "/api/gripper", { action: "close" }, "gripper closing");
+    $("btn-grip-hand").onclick = () => act("POST", "/api/gripper", { action: "hand" }, "gripper free: move it by hand");
     if (!config.gripper.has_gripper) document.querySelector(".gripper-row").classList.add("hidden");
   }
 
@@ -143,7 +144,10 @@
     $("btn-connect").classList.toggle("hidden", !disc);
     $("btn-disconnect").classList.toggle("hidden", disc);
     $("btn-disconnect").disabled = play;
-    $("jog-card").classList.toggle("off", disc || !hold || !state.gains_settled);
+    $("jog-controls").classList.toggle("off", disc || !hold || !state.gains_settled);
+    document.querySelector(".gripper-row").classList.toggle("off", disc || off || play);
+    $("btn-grip-hand").classList.toggle("on", !!state.gripper_hand);
+    $("btn-grip-hand").textContent = state.gripper_hand ? "Hand ✓" : "Hand";
     $("btn-free").disabled = disc || free || play || off;
     $("btn-hold").disabled = disc || hold || off;
     $("btn-stop").disabled = disc || off;

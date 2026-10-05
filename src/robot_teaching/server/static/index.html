@@ -53,7 +53,9 @@
   </section>
 
   <section class="card" id="jog-card">
-    <h2>Fine adjustment <span class="muted small">(hold mode)</span></h2>
+    <h2>Fine adjustment</h2>
+    <div id="jog-controls">
+    <h3>Jog <span class="muted">(hold mode)</span></h3>
     <div class="row">
       <label>Joint step</label>
       <div class="seg" id="joint-step"></div>
@@ -70,9 +72,11 @@
       </div>
     </div>
     <div class="jog-grid" id="cart-jog"></div>
+    </div>
 
-    <h3>Gripper</h3>
+    <h3>Gripper <span class="muted">(hold and free drive)</span></h3>
     <div class="row gripper-row">
+      <button class="btn" id="btn-grip-hand" title="let the gripper be moved by hand (light damping); the recorded opening follows your hand. Open, Close or the slider make it stiff again">Hand</button>
       <button class="btn" id="btn-grip-close" title="fully closed = slider at the left end">Close</button>
       <div class="grip-slider-wrap">
         <input type="range" id="grip-slider" min="0" max="100" step="1" value="0" aria-label="gripper opening, percent">

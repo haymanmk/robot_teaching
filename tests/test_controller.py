@@ -204,3 +204,40 @@ def test_failed_connect_stays_disconnected(cfg, model):
         ctl.start()
     s = ctl.snapshot()
     assert s.mode == Mode.DISCONNECTED.value and not ctl.is_connected
+
+
+def test_gripper_hand_mode(rig):
+    sim, ctl = rig
+    s = settle(sim, ctl, 100)
+    assert not s.gripper_hand and s.gripper_target == 0.0
+    # Stiff by default: a hand push is pulled back to the target.
+    sim.set_state(s.q, gripper=1.0)
+    s = settle(sim, ctl, 300)
+    assert s.gripper_target == 0.0 and abs(s.gripper) < 0.05
+    # Hand mode: the target follows the hand, in hold and in free drive.
+    assert ctl.gripper_hand()[0]
+    sim.set_state(s.q, gripper=2.0)
+    s = settle(sim, ctl, 20)
+    assert s.gripper_hand and s.gripper_target == pytest.approx(2.0)
+    ctl.free_drive()
+    settle(sim, ctl, 300)
+    sim.set_state(ctl.snapshot().q, gripper=3.0)
+    s = settle(sim, ctl, 20)
+    assert s.gripper_hand and s.gripper_target == pytest.approx(3.0)
+    # A target command ends hand mode and the gripper is stiff again.
+    assert ctl.set_gripper(5.0)[0]
+    s = settle(sim, ctl, 600)
+    assert not s.gripper_hand and s.gripper_target == 5.0 and abs(s.gripper - 5.0) < 0.05
+    sim.set_state(s.q, gripper=4.0)
+    s = settle(sim, ctl, 300)
+    assert s.gripper_target == 5.0 and abs(s.gripper - 5.0) < 0.05
+    # Hand mode survives free drive -> hold, but not playback.
+    ctl.gripper_hand()
+    ctl.hold()
+    s = settle(sim, ctl, 300)
+    assert s.gripper_hand
+    traj = plan_program(ctl.model, _program(), s.q_target, ctl.cfg, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0)[0]
+    s = settle(sim, ctl, 5)
+    assert not s.gripper_hand
+    assert not ctl.gripper_hand()[0]

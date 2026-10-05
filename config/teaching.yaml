@@ -59,6 +59,7 @@ gripper:
   settle_time: 0.6             # s inserted into playback when the gripper target changes
   kp: null                     # null = upstream MIT gains for the gripper group
   kd: null
+  hand_kd: 0.5                 # N·m·s/rad damping in hand mode (gripper follows your hand)
 
 playback:
   default_speed: 0.5           # initial speed scale (0..1]

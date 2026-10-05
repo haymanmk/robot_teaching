@@ -73,7 +73,8 @@ td:first-child, th:first-child { text-align: left; }
 .jog { display: grid; grid-template-columns: 44px 1fr 1fr; gap: 4px; align-items: center; }
 .jog .lbl { color: var(--muted); font-size: 12px; }
 .jog button { min-height: 38px; font-size: 16px; }
-#jog-card.off { opacity: .45; pointer-events: none; }
+#jog-controls.off, .gripper-row.off { opacity: .45; pointer-events: none; }
+#btn-grip-hand.on { background: #5a3d0c; border-color: #8a5f12; outline: 2px solid var(--amber); }
 
 .gripper-row { flex-wrap: nowrap; }
 .grip-slider-wrap { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 2px; }

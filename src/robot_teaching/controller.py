@@ -14,6 +14,12 @@ Modes
                with gravity feed-forward; a speed scale slews smoothly, and a
                stop ramps the speed to zero before returning to HOLD.
 
+The gripper is held stiffly at its target, except in *hand mode* (HOLD and
+FREE_DRIVE only): the setpoint then follows the measured position with light
+damping so the operator can open or close it by hand, and the recorded target
+is the opening they set. Any gripper target command or playback ends hand
+mode, so a grasped object is never released by a mode change.
+
 Gain changes between modes are faded with a smoothstep so stiffness never
 jumps. Every error path falls back to HOLD at the measured position; motors are
 disabled only by an explicit e-stop.
@@ -61,6 +67,7 @@ class Snapshot:
     pose: Pose | None
     gripper: float | None
     gripper_target: float | None
+    gripper_hand: bool
     tau_g: np.ndarray
     ee_speed: tuple[float, float]
     free_drive_status: str
@@ -82,6 +89,7 @@ class Snapshot:
             "pose": self.pose.to_dict() if self.pose is not None else None,
             "gripper": self.gripper,
             "gripper_target": self.gripper_target,
+            "gripper_hand": self.gripper_hand,
             "tau_g": self.tau_g.tolist(),
             "ee_speed": list(self.ee_speed),
             "free_drive_status": self.free_drive_status,
@@ -130,6 +138,7 @@ class TeachController:
         gkp, gkd = backend.gripper_gains()
         self._gripper_kp = float(cfg.gripper.kp) if cfg.gripper.kp is not None else gkp
         self._gripper_kd = float(cfg.gripper.kd) if cfg.gripper.kd is not None else gkd
+        self._gripper_hand_kd = float(cfg.gripper.hand_kd)
         self._margin = float(cfg.limits.joint_position_margin)
         self._jog_vel = float(cfg.jog.joint_velocity)
 
@@ -143,6 +152,7 @@ class TeachController:
         self._q_goal = np.zeros(n)
         self._gripper: float | None = None
         self._gripper_target: float | None = None
+        self._gripper_hand = False
         self._tau_g = np.zeros(n)
         self._integral = np.zeros(n)
         self._kp = self._hold_kp.copy()
@@ -204,6 +214,7 @@ class TeachController:
             self._q_goal = self._q.copy()
             self._gripper = g
             self._gripper_target = g
+            self._gripper_hand = False
             self._tau_g = self._gravity(self._q)
             self._set_gains(self._hold_kp, self._hold_kd, 0.0)
             self._error = None
@@ -280,6 +291,10 @@ class TeachController:
 
     def set_gripper(self, position: float) -> tuple[bool, str]:
         return self._send("gripper", float(position))
+
+    def gripper_hand(self) -> tuple[bool, str]:
+        """Let the gripper be moved by hand until the next gripper target command."""
+        return self._send("gripper_hand")
 
     def jog_to(self, q_goal: np.ndarray) -> tuple[bool, str]:
         q_goal = np.asarray(q_goal, float)[: self.n]
@@ -404,8 +419,18 @@ class TeachController:
                 return True, "stopped"
             return True, "free drive: nothing commanded to stop (press Hold to stiffen)"
         if k == "gripper":
+            self._gripper_hand = False
             self._gripper_target = float(payload)
             return True, "gripper target set"
+        if k == "gripper_hand":
+            if self._mode not in (Mode.HOLD, Mode.FREE_DRIVE):
+                return False, "hand mode is only available in hold or free drive"
+            if not self.backend.has_gripper:
+                return False, "this arm has no gripper"
+            self._gripper_hand = True
+            if self._gripper is not None:
+                self._gripper_target = float(self._gripper)
+            return True, "gripper free to move by hand"
         if k == "jog_goal":
             if self._mode != Mode.HOLD:
                 return False, "jogging is only available in hold mode"
@@ -429,6 +454,7 @@ class TeachController:
             self._pb = _Playback(traj=traj, speed=0.0, speed_target=speed, loop=loop, q_cmd=traj.q[0].copy())
             self._mode = Mode.PLAYBACK
             self._fd_status = ""
+            self._gripper_hand = False
             return True, "playing"
         if k == "speed":
             if self._pb is None:
@@ -554,7 +580,12 @@ class TeachController:
                     tau = self._tau_g
                 self.backend.send_arm_mit(q_cmd, qd_cmd, self._kp, self._kd, tau)
                 if self.backend.has_gripper and self._gripper_target is not None:
-                    self.backend.send_gripper_mit(self._gripper_target, self._gripper_kp, self._gripper_kd)
+                    if self._gripper_hand and self._gripper is not None and self._mode in (Mode.HOLD, Mode.FREE_DRIVE):
+                        # Follow the hand: setpoint = measured position, light damping only.
+                        self._gripper_target = float(self._gripper)
+                        self.backend.send_gripper_mit(self._gripper_target, self._gripper_kp, self._gripper_hand_kd)
+                    else:
+                        self.backend.send_gripper_mit(self._gripper_target, self._gripper_kp, self._gripper_kd)
             except Exception as e:
                 # Fail safe: stiff hold where the arm is, report, keep running.
                 self._error = f"{type(e).__name__}: {e}"
@@ -597,6 +628,7 @@ class TeachController:
             pose=pose,
             gripper=self._gripper,
             gripper_target=self._gripper_target,
+            gripper_hand=self._gripper_hand,
             tau_g=self._tau_g.copy(),
             ee_speed=self._ee_speed,
             free_drive_status=self._fd_status,

@@ -94,7 +94,11 @@ uv run robot-teaching plan programs/example_pick_place.json --csv /tmp/traj.csv
 2. Press **● Record point**. The current joint configuration, end-effector pose and gripper
    target are stored with the chosen motion type / speed / blend / dwell.
 3. For small corrections press **Hold**, then use the **joint** or **Cartesian** jog buttons
-   and the **gripper** controls, and record (or **Update** an existing point).
+   and record (or **Update** an existing point). The **gripper** controls work in hold and
+   free drive: **Open**, **Close** and the slider command a stiff position; **Hand** lets you
+   open or close the gripper by hand (light damping) and the recorded opening follows your
+   hand. Hand mode stays on until the next Open/Close/slider command or playback, so a
+   grasped object is not released by switching modes.
 4. Edit the list inline: rename, change motion type or speed, toggle blend, set dwell or the
    gripper value, reorder with ▲▼, **Go** to check a point, ✕ to delete. **Save** writes
    `programs/<name>.json`.

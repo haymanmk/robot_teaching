@@ -87,6 +87,7 @@ class GripperConfig:
     settle_time: float = 0.6
     kp: Any = None
     kd: Any = None
+    hand_kd: float = 0.5     # damping while the gripper is moved by hand (hand mode)
 
 
 @dataclass

@@ -163,3 +163,21 @@ def test_disconnect_refused_during_playback(client):
     assert client.post("/api/playback/start", json={"speed": 0.5}).status_code == 200
     client.sim.step(100)
     assert client.post("/api/disconnect").status_code == 409
+
+
+def test_gripper_controls_in_free_drive(client):
+    assert client.post("/api/mode", json={"mode": "free_drive"}).status_code == 200
+    client.sim.step(300)
+    r = client.post("/api/gripper", json={"action": "hand"})
+    assert r.status_code == 200, r.text
+    client.sim.set_state(client.ctl.snapshot().q, gripper=2.5)
+    client.sim.step(10)
+    st = client.get("/api/state").json()["state"]
+    assert st["gripper_hand"] and st["gripper_target"] == pytest.approx(2.5)
+    assert client.post("/api/gripper", json={"action": "open"}).status_code == 200
+    client.sim.step(5)
+    st = client.get("/api/state").json()["state"]
+    assert not st["gripper_hand"] and st["gripper_target"] == 5.0
+    # Recording in free drive stores the current gripper target.
+    r = client.post("/api/program/points", json={})
+    assert r.status_code == 200 and r.json()["point"]["gripper"] == 5.0

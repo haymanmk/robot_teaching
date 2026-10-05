@@ -50,7 +50,7 @@ class CartesianJog(BaseModel):
 
 class GripperRequest(BaseModel):
     position: float | None = None
-    action: Literal["open", "close"] | None = None
+    action: Literal["open", "close", "hand"] | None = None
 
 
 class RecordRequest(BaseModel):
@@ -352,6 +352,8 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         if not controller.backend.has_gripper:
             raise HTTPException(400, "this arm has no gripper")
         state.require_connected()
+        if req.action == "hand":
+            return _result(controller.gripper_hand())
         if req.action == "open":
             pos = cfg.gripper.open_position
         elif req.action == "close":
