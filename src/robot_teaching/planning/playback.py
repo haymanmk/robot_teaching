@@ -4,9 +4,11 @@ Walking the program from the arm's current configuration:
 
 * consecutive ``joint`` points are planned together as one spline, so a point
   with ``blend`` is passed through without stopping;
-* a ``linear`` point is a straight-line move that stops at both ends;
+* consecutive ``linear`` points are planned together as one Cartesian path:
+  a point with ``blend`` is passed through with a corner blend, the others
+  are reached on a straight line and stopped at;
 * a point stops whenever it has a dwell, changes the gripper target, or is
-  followed by a linear move;
+  followed by a point of the other motion type;
 * after arriving, the gripper target is emitted as an event and the arm holds
   still for the gripper settle time and the dwell.
 
@@ -21,7 +23,7 @@ import numpy as np
 from ..config import TeachingConfig, resolve_vector
 from ..model import RobotModel
 from ..program import Program, TaughtPoint
-from .cartesian import plan_linear_segment
+from .cartesian import plan_linear_block
 from .joint_spline import plan_joint_path
 from .trajectory import PlanningError, Trajectory, TrajectoryEvent
 
@@ -74,20 +76,30 @@ def plan_program(
     elapsed = 0.0
     q_cur = q_start.copy()
 
-    def flush_joint_block(block: list[TaughtPoint]) -> None:
-        nonlocal q_cur, elapsed
-        if not block:
+    joint_block: list[TaughtPoint] = []
+    joint_stops: list[bool] = []
+
+    def flush_joint_block() -> None:
+        nonlocal q_cur, elapsed, joint_block, joint_stops
+        if not joint_block:
             return
-        waypoints = np.vstack([q_cur] + [p.q_array() for p in block])
-        stops = [True] + [bool(s) for s in block_stops]
-        speeds = [p.speed for p in block]
+        waypoints = np.vstack([q_cur] + [p.q_array() for p in joint_block])
+        stops = [True] + [bool(s) for s in joint_stops]
+        speeds = [p.speed for p in joint_block]
         res = plan_joint_path(waypoints, stops, vmax, amax, dt, speeds)
         traj = Trajectory(res.t, res.q, res.qd)
         pieces.append(traj)
-        arrivals = [elapsed + float(res.knot_times[k + 1]) for k in range(len(block))]
-        point_times.extend(arrivals)
+        point_times.extend(elapsed + float(res.knot_times[k + 1]) for k in range(len(joint_block)))
         elapsed += traj.duration
         q_cur = waypoints[-1].copy()
+        joint_block, joint_stops = [], []
+
+    def stops_at(idx: int) -> bool:
+        """A point stops unless it is a pass-through whose gripper and motion type continue unchanged."""
+        p = points[idx]
+        nxt = points[idx + 1] if idx + 1 < len(points) else None
+        gripper_changes = gripper_prev is None or abs(p.gripper - gripper_prev) > 1e-6
+        return (not p.blend or p.dwell > 0.0 or gripper_changes or nxt is None or nxt.motion != p.motion)
 
     def after_arrival(p: TaughtPoint) -> None:
         """Gripper event + settle/dwell holds after reaching a stopping point."""
@@ -102,44 +114,36 @@ def plan_program(
             pieces.append(h)
             elapsed += h.duration
 
-    block: list[TaughtPoint] = []
-    block_stops: list[bool] = []
-    for i, p in enumerate(points):
-        nxt = points[i + 1] if i + 1 < len(points) else None
-        gripper_changes = gripper_prev is None or abs(p.gripper - (gripper_prev if gripper_prev is not None else p.gripper)) > 1e-6
+    i = 0
+    while i < len(points):
+        p = points[i]
         if p.motion == "linear":
-            flush_joint_block(block)
-            block, block_stops = [], []
-            traj = plan_linear_segment(
-                model, q_cur, p.q_array(), vmax, amax,
+            flush_joint_block()
+            j = i
+            while not stops_at(j):        # extend the block over pass-through linear points
+                j += 1
+            block = points[i:j + 1]
+            res = plan_linear_block(
+                model, q_cur, [b.q_array() for b in block], vmax, amax,
                 lim.cartesian_linear_velocity, lim.cartesian_linear_acceleration,
                 lim.cartesian_angular_velocity, lim.cartesian_angular_acceleration,
-                dt, speed=p.speed, margin=margin,
+                dt, speed=min(b.speed for b in block), blend_radius=float(lim.linear_blend_radius),
             )
-            pieces.append(traj)
-            elapsed += traj.duration
-            point_times.append(elapsed)
-            q_cur = p.q_array()
-            after_arrival(p)
+            pieces.append(res.trajectory)
+            point_times.extend(elapsed + t for t in res.arrival_times)
+            elapsed += res.trajectory.duration
+            q_cur = block[-1].q_array()
+            after_arrival(block[-1])
+            i = j + 1
             continue
-
-        must_stop = (
-            not p.blend
-            or p.dwell > 0.0
-            or gripper_changes
-            or nxt is None
-            or nxt.motion == "linear"
-        )
-        block.append(p)
-        block_stops.append(must_stop)
-        if must_stop:
-            flush_joint_block(block)
-            block, block_stops = [], []
+        stop = stops_at(i)
+        joint_block.append(p)
+        joint_stops.append(stop)
+        if stop:
+            flush_joint_block()
             after_arrival(p)
-        else:
-            # Pass-through point: it still changes nothing on the gripper (checked above).
-            pass
-    flush_joint_block(block)
+        i += 1
+    flush_joint_block()
 
     traj = Trajectory.concatenate(pieces)
     traj.point_times = point_times

@@ -123,12 +123,15 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
    triggers the same graceful stop while the page has keyboard focus.
 
 Point semantics: a point's motion type describes how it is *reached* from the previous
-point (the first point from wherever the arm is). A **joint** point can be a **blend**
-(passed through without stopping); the arm stops at a point that has a dwell, changes the
-gripper target, or precedes a linear move. The **gripper** value is applied on arrival,
-followed by a settle time (`gripper.settle_time`) and the dwell. **Linear** points always
-stop at both ends and must be on the same IK branch as the previous point (otherwise the
-planner refuses and suggests a joint move).
+point (the first point from wherever the arm is). A **blend** point is passed through
+without stopping: consecutive joint points blend in joint space (a C² spline), consecutive
+**linear** points form one Cartesian path whose corners are cut within
+`limits.linear_blend_radius` (an industrial blend zone), with continuous velocity and a
+speed capped by the centripetal acceleration the blend needs. The arm stops at a point
+that has a dwell, changes the gripper target, or precedes a point of the other motion
+type. The **gripper** value is applied on arrival, followed by a settle time
+(`gripper.settle_time`) and the dwell. A linear block must end on the same IK branch as
+the taught configuration (otherwise the planner refuses and suggests a joint move).
 
 ## Configuration (`config/teaching.yaml`)
 
@@ -178,7 +181,7 @@ WebSocket API.
 
 ## Known limitations / next steps
 
-* Blends are joint-space only; linear segments stop at both ends.
+* A blended linear corner is a quadratic Bézier cut; the blend radius is global, not per point.
 * No collision checking: taught points are validated against joint limits only.
 * Gripper positions are motor angles; a calibration helper and a force-limited close are
   not implemented.

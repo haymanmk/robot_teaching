@@ -50,9 +50,6 @@ class TaughtPoint:
             raise ValueError(f"speed must be in (0, 1], got {self.speed}")
         if self.dwell < 0.0:
             raise ValueError("dwell must be >= 0")
-        if self.motion == "linear" and self.blend:
-            # Linear segments always stop at both ends in this version.
-            self.blend = False
 
     def q_array(self) -> np.ndarray:
         return np.asarray(self.q, dtype=float)

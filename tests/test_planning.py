@@ -1,11 +1,14 @@
 import numpy as np
 import pytest
 
+import pinocchio as pin
+
 from robot_teaching.planning import (
     PlanningError,
     Trajectory,
     min_jerk_duration,
     plan_joint_path,
+    plan_linear_block,
     plan_linear_segment,
     plan_program,
     quintic_coeffs,
@@ -150,3 +153,64 @@ def test_linear_move_may_start_on_a_joint_limit(model, cfg):
     for s in np.linspace(0, traj.duration, 30):
         pm = model.fk(traj.sample(s)[0]).translation
         assert np.linalg.norm(np.cross(pm - pa, pb - pa)) / np.linalg.norm(pb - pa) < 1e-4
+
+
+def _shifted(model, q_seed, dxyz):
+    """IK solution for the pose of q_seed translated by dxyz (base axes)."""
+    T = model.fk(q_seed)
+    res = model.ik(pin.SE3(T.rotation, T.translation + np.asarray(dxyz)), q_seed)
+    assert res.success
+    return np.asarray(res.q)
+
+
+def test_linear_block_blends_the_corner(model, cfg, limits):
+    vmax, amax = limits
+    q1 = _shifted(model, L_POSE, [0.08, 0.0, 0.0])       # 8 cm forward
+    q2 = _shifted(model, q1, [0.0, 0.0, 0.08])           # then 8 cm up: an L-shaped path
+    r = 0.02
+    res = plan_linear_block(model, L_POSE, [q1, q2], vmax, amax, 0.15, 0.3, 0.8, 2.0, 0.01,
+                            speed=1.0, blend_radius=r)
+    traj = res.trajectory
+    P0, P1, P2 = (model.fk(q).translation for q in (L_POSE, q1, q2))
+    pos = np.array([model.fk(traj.sample(s)[0]).translation for s in np.linspace(0, traj.duration, 200)])
+    # The corner is cut: the path never visits P1 but comes within the blend radius of it.
+    d_corner = np.min(np.linalg.norm(pos - P1, axis=1))
+    assert 0.3 * r < d_corner < r
+    # Outside the blend zone the path is on the two straight lines.
+    for p in pos:
+        on1 = np.linalg.norm(np.cross(p - P0, P1 - P0)) / np.linalg.norm(P1 - P0)
+        on2 = np.linalg.norm(np.cross(p - P1, P2 - P1)) / np.linalg.norm(P2 - P1)
+        if np.linalg.norm(p - P1) > 1.5 * r:
+            assert min(on1, on2) < 2e-4
+    # Velocity is continuous through the corner: the arm does not stop at the pass-through point.
+    t1 = res.arrival_times[0]
+    assert 0.0 < t1 < traj.duration
+    lin = model.ee_velocity(*traj.sample(t1))[0]
+    assert lin > 0.05
+    assert np.max(np.abs(traj.q[-1] - q2)) < 1e-3
+    assert np.all(traj.max_abs_velocity() <= vmax * 1.001)
+
+
+def test_plan_program_stops_at_unblended_linear_points(model, cfg):
+    q1 = _shifted(model, L_POSE, [0.08, 0.0, 0.0])
+    q2 = _shifted(model, q1, [0.0, 0.0, 0.08])
+    prog = Program()
+    prog.add(TaughtPoint(q=q1, motion="linear", speed=1.0, blend=False))
+    prog.add(TaughtPoint(q=q2, motion="linear", speed=1.0))
+    traj = plan_program(model, prog, L_POSE, cfg, gripper_start=0.0)
+    assert np.max(np.abs(traj.sample(traj.point_times[0])[1])) < 1e-2        # stopped at the corner
+    prog.points[0].blend = True
+    traj_b = plan_program(model, prog, L_POSE, cfg, gripper_start=0.0)
+    assert np.max(np.abs(traj_b.sample(traj_b.point_times[0])[1])) > 0.05   # passed through
+    assert traj_b.duration < traj.duration
+
+
+def test_linear_pure_rotation_has_a_duration(model, limits):
+    vmax, amax = limits
+    q_rot = L_POSE + np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.5])
+    T0, T1 = model.fk(L_POSE), model.fk(q_rot)
+    if np.linalg.norm(T1.translation - T0.translation) > 1e-6:
+        pytest.skip("joint 6 does not rotate about the tool point in this model")
+    tr = plan_linear_segment(model, L_POSE, q_rot, vmax, amax, 0.15, 0.3, 0.8, 2.0, 0.01)
+    assert tr.duration > 0.5 and np.max(np.abs(tr.q[-1] - q_rot)) < 1e-3
+    assert np.max(np.abs(tr.qd[:, 5])) <= 0.8 * 1.05

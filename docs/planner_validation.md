@@ -63,7 +63,14 @@ Planning the example with tighter IK tolerances (the planner's `_CLIK` parameter
 
 The planned durations are identical in every case.
 
-**Proposed fix, not yet applied.** Tighten the IK tolerance to 1e-6 or 1e-7 (one line,
-planning once per Play takes about 0.5 s for a 20 s program). The cleaner long-term option
-is to compute the joint velocity analytically from the Cartesian velocity through the
-Jacobian instead of differencing the IK output.
+**Fix applied (2026-10-06).** The IK tolerance is now 1e-6 (`_CLIK` in
+`src/robot_teaching/planning/cartesian.py`). The same change also replaced the linear-move
+timing: a block of linear points (blended through pass-through points) now runs under a
+velocity-limit curve (Cartesian speed, angular speed, centripetal acceleration in the
+blends) with forward/backward passes at the Cartesian acceleration limit, sampled with the
+constant-acceleration law inside each 2 mm cell on a uniform time grid. That removed a
+second, larger source of apparent acceleration: the old sampling left a speed step of about
+0.017 m/s out of rest at both ends of a move and a 2 ms last sample, which the forced zero
+end velocity turned into a spike of tens of rad/s². The cleaner long-term option remains to
+compute the joint velocity analytically from the Cartesian velocity through the Jacobian
+instead of differencing the IK output.
