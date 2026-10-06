@@ -98,6 +98,9 @@ Offline check of a saved program:
 uv run robot-teaching plan programs/example_pick_place.json --csv /tmp/traj.csv
 ```
 
+A fuller offline validation of the planner (smoothness, limits, straightness, plots) is
+`tools/validate_plan.py`; its checks and findings are in `docs/planner_validation.md`.
+
 ## Teaching workflow
 
 1. Press **Connect** (real arm; the simulator connects by itself). Move the arm to a
