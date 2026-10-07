@@ -72,6 +72,21 @@ class HoldConfig:
 
 
 @dataclass
+class FrictionConfig:
+    """Coulomb friction feed-forward for playback.
+
+    The friction torque each joint is about to meet is added to the MIT torque with the
+    sign of the *commanded* velocity, so a joint starts moving with its setpoint instead
+    of standing still until the position error has grown enough to break it free
+    (stick-slip, which bends linear moves). ``coulomb`` is the per-joint friction in N·m
+    (0 disables it); the term ramps in as ``coulomb * tanh(qd_cmd / velocity_scale)`` so
+    it is zero at rest and never chatters.
+    """
+    coulomb: Any = 0.0            # N·m, scalar or one value per joint
+    velocity_scale: float = 0.02  # rad/s
+
+
+@dataclass
 class JogConfig:
     joint_steps_deg: list[float] = field(default_factory=lambda: [0.5, 1.0, 5.0])
     cartesian_steps_m: list[float] = field(default_factory=lambda: [0.001, 0.005, 0.02])
@@ -111,6 +126,7 @@ class TeachingConfig:
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     free_drive: FreeDriveConfig = field(default_factory=FreeDriveConfig)
     hold: HoldConfig = field(default_factory=HoldConfig)
+    friction: FrictionConfig = field(default_factory=FrictionConfig)
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
@@ -145,6 +161,7 @@ _SECTIONS = {
     "limits": LimitsConfig,
     "free_drive": FreeDriveConfig,
     "hold": HoldConfig,
+    "friction": FrictionConfig,
     "jog": JogConfig,
     "gripper": GripperConfig,
     "playback": PlaybackConfig,

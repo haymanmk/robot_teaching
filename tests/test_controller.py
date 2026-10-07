@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -241,3 +243,51 @@ def test_gripper_hand_mode(rig):
     s = settle(sim, ctl, 5)
     assert not s.gripper_hand
     assert not ctl.gripper_hand()[0]
+
+
+def _with_friction(cfg, coulomb):
+    return dataclasses.replace(cfg, friction=dataclasses.replace(cfg.friction, coulomb=coulomb, velocity_scale=0.02))
+
+
+def _play_and_measure(cfg, model):
+    """Play the test program once; return (max |q - q_cmd| per joint, max |tau_f| per joint)."""
+    sim = SimBackend(realtime=False, q0=L_POSE, model=model)
+    ctl = TeachController(sim, cfg)
+    ctl.start()
+    s = settle(sim, ctl, 300)
+    assert np.all(s.tau_f == 0.0), "nothing is commanded to move in hold: no friction term"
+    traj = plan_program(ctl.model, _program(), s.q_target, cfg, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0)[0]
+    err, tau_f = np.zeros(ctl.n), np.zeros(ctl.n)
+    active = np.broadcast_to(np.asarray(cfg.friction.coulomb, float), (ctl.n,)) > 0.0
+    while True:
+        s = settle(sim, ctl, 1)
+        if s.mode != Mode.PLAYBACK.value:
+            break
+        _, vel, _, _, tau = sim._cmd
+        moving = (np.abs(vel) > 0.1) & active
+        # The term carries the sign of the commanded velocity and is bounded by the configured friction.
+        assert np.all(np.sign(s.tau_f[moving]) == np.sign(vel[moving]))
+        assert np.allclose(tau, s.tau_g + s.tau_f)
+        err = np.maximum(err, np.abs(s.q - s.q_target))
+        tau_f = np.maximum(tau_f, np.abs(s.tau_f))
+    assert np.all(ctl.snapshot().tau_f == 0.0), "back in hold the term is zero"
+    ctl.shutdown()
+    return err, tau_f
+
+
+def test_friction_feedforward_follows_commanded_velocity(cfg, model):
+    coulomb = np.array([0.0, 0.3, 0.3, 0.2, 0.2, 0.0])
+    err, tau_f = _play_and_measure(_with_friction(cfg, coulomb.tolist()), model)
+    assert np.all(tau_f <= coulomb + 1e-9)
+    assert np.all(tau_f[[1, 2, 4]] > 0.9 * coulomb[[1, 2, 4]]), "joints that move see the full term"
+    assert np.all(tau_f[[0, 5]] == 0.0), "a zero entry disables the term for that joint"
+
+
+def test_friction_feedforward_reduces_tracking_error(cfg, model):
+    # The simulator has 0.3 N·m of Coulomb friction on every joint; feeding it forward must
+    # cut the tracking error, and the error must not grow on any joint (wrong sign would).
+    err_off, _ = _play_and_measure(_with_friction(cfg, 0.0), model)
+    err_on, _ = _play_and_measure(_with_friction(cfg, 0.3), model)
+    assert np.max(err_on) < 0.6 * np.max(err_off), (err_off, err_on)
+    assert np.all(err_on <= err_off + 5e-4), (err_off, err_on)

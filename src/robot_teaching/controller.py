@@ -11,8 +11,8 @@ Modes
                on the locked target), FOLLOW while being pushed (target follows
                the measured position).
 ``PLAYBACK``   streams a planned :class:`Trajectory` as ``(q, q̇)`` setpoints
-               with gravity feed-forward; a speed scale slews smoothly, and a
-               stop ramps the speed to zero before returning to HOLD.
+               with gravity and Coulomb-friction feed-forward; a speed scale slews
+               smoothly, and a stop ramps the speed to zero before returning to HOLD.
 
 The gripper is held stiffly at its target, except in *hand mode* (HOLD and
 FREE_DRIVE only): the setpoint then follows the measured position with light
@@ -70,6 +70,7 @@ class Snapshot:
     gripper_target: float | None
     gripper_hand: bool
     tau_g: np.ndarray
+    tau_f: np.ndarray
     ee_speed: tuple[float, float]
     free_drive_status: str
     gains_settled: bool
@@ -93,6 +94,7 @@ class Snapshot:
             "gripper_target": self.gripper_target,
             "gripper_hand": self.gripper_hand,
             "tau_g": self.tau_g.tolist(),
+            "tau_f": self.tau_f.tolist(),
             "ee_speed": list(self.ee_speed),
             "free_drive_status": self.free_drive_status,
             "gains_settled": self.gains_settled,
@@ -137,6 +139,8 @@ class TeachController:
         hkp, hkd = backend.hold_gains()
         self._hold_kp = resolve_vector(cfg.hold.kp, n, "hold.kp") if cfg.hold.kp is not None else np.asarray(hkp, float)
         self._hold_kd = resolve_vector(cfg.hold.kd, n, "hold.kd") if cfg.hold.kd is not None else np.asarray(hkd, float)
+        self._coulomb = resolve_vector(cfg.friction.coulomb, n, "friction.coulomb")
+        self._friction_v0 = max(float(cfg.friction.velocity_scale), 1e-6)
         gkp, gkd = backend.gripper_gains()
         self._gripper_kp = float(cfg.gripper.kp) if cfg.gripper.kp is not None else gkp
         self._gripper_kd = float(cfg.gripper.kd) if cfg.gripper.kd is not None else gkd
@@ -158,6 +162,7 @@ class TeachController:
         self._gripper_target: float | None = None
         self._gripper_hand = False
         self._tau_g = np.zeros(n)
+        self._tau_f = np.zeros(n)
         self._integral = np.zeros(n)
         self._kp = self._hold_kp.copy()
         self._kd = self._hold_kd.copy()
@@ -322,6 +327,12 @@ class TeachController:
 
     def _gravity(self, q: np.ndarray) -> np.ndarray:
         return self._tau_scale * self.model.gravity(q)
+
+    def _friction_ff(self, qd_cmd: np.ndarray) -> np.ndarray:
+        """Coulomb friction feed-forward: the friction each joint is about to meet, with the
+        sign of the commanded velocity, ramped in smoothly around zero. It is open loop (it
+        never looks at the noisy measured velocity), so it cannot destabilize the position loop."""
+        return self._coulomb * np.tanh(np.asarray(qd_cmd, dtype=float) / self._friction_v0)
 
     def _set_gains(self, kp: np.ndarray, kd: np.ndarray, duration: float) -> None:
         self._gain_from = (self._kp.copy(), self._kd.copy())
@@ -569,6 +580,7 @@ class TeachController:
                 else:
                     self._ee_speed = (0.0, 0.0)
                 blend = self._gain_blend()
+                self._tau_f = np.zeros(self.n)
 
                 if self._mode == Mode.DISABLED:
                     self._publish(dt)
@@ -581,7 +593,8 @@ class TeachController:
                     tau = self._tau_g + self._integral
                 else:
                     q_cmd, qd_cmd = self._update_playback(dt)
-                    tau = self._tau_g
+                    self._tau_f = self._friction_ff(qd_cmd)
+                    tau = self._tau_g + self._tau_f
                 self.backend.send_arm_mit(q_cmd, qd_cmd, self._kp, self._kd, tau)
                 if self.backend.has_gripper and self._gripper_target is not None:
                     if self._gripper_hand and self._gripper is not None and self._mode in (Mode.HOLD, Mode.FREE_DRIVE):
@@ -637,6 +650,7 @@ class TeachController:
             gripper_target=self._gripper_target,
             gripper_hand=self._gripper_hand,
             tau_g=self._tau_g.copy(),
+            tau_f=self._tau_f.copy(),
             ee_speed=self._ee_speed,
             free_drive_status=self._fd_status,
             gains_settled=self._gain_t0 is None,

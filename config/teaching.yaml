@@ -44,6 +44,18 @@ hold:
   kp: null
   kd: null
 
+friction:
+  # Coulomb friction feed-forward during playback. The friction torque each joint is about
+  # to meet (N·m) is added to the MIT torque with the sign of the commanded velocity, so a
+  # slowly moving joint does not stand still until its position error has built up and
+  # then jump ahead (stick-slip, which bends linear moves). The vendor measured, contact
+  # free (docs/gravity_calibration_rs_2026-07-17.md in the submodule): joint2 0.53,
+  # joint3 0.49, joint4 0.30, joint5 0.21 N·m; joints 1 and 6 were not measured. Start
+  # around 75 % of the measured value: too much makes a joint lead its setpoint instead
+  # of lagging it. 0 disables the term.
+  coulomb: [0.0, 0.40, 0.37, 0.22, 0.16, 0.0]
+  velocity_scale: 0.02   # rad/s, the term ramps in as coulomb * tanh(qd_cmd / velocity_scale)
+
 jog:
   joint_steps_deg: [0.5, 1.0, 5.0]
   cartesian_steps_m: [0.001, 0.005, 0.02]

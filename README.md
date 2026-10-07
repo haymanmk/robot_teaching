@@ -14,7 +14,7 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
   C² quintic splines through the via-points, time-scaled to per-joint velocity and
   acceleration limits; linear moves are straight lines in position with geodesic
   orientation, tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
-  500 Hz in MIT mode with gravity feed-forward. Speed override, loop and smooth stop.
+  500 Hz in MIT mode with gravity and Coulomb-friction feed-forward. Speed override, loop and smooth stop.
 * **Simulator** with the same interface as the hardware, so the UI and planner run and
   are tested without the arm.
 
@@ -138,6 +138,7 @@ planner refuses and suggests a joint move).
 | `limits` | per-joint velocity / acceleration at speed 1.0, Cartesian speed limits, joint-limit margin, planner sample spacing |
 | `free_drive` | compliant gains, integral term, `tau_scale` per joint, release / re-lock thresholds, velocity filter |
 | `hold` | stiff gains (null = the vendor's per-joint MIT gains) |
+| `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; 0 disables |
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
 | `playback` | default speed scale |
@@ -148,8 +149,10 @@ Motor ids, CAN channel, MIT gains and the gravity profiles stay in the vendor's
 
 **Calibrate on your arm before trusting the defaults:** the gripper `open_position`
 (the vendor examples use 5.0 rad), the free-drive gains (start with one joint enabled,
-from the "L" pose joint2 ≈ 0.7 rad, joint3 ≈ 1.1 rad), and the playback limits (the
-defaults are deliberately slow).
+from the "L" pose joint2 ≈ 0.7 rad, joint3 ≈ 1.1 rad), the playback limits (the
+defaults are deliberately slow), and the friction feed-forward `friction.coulomb` (the
+defaults are 75 % of the values the vendor measured on one arm; the vendor's
+`tools/gravity_calibration` PD sweeps measure them on yours).
 
 ## Safety
 
