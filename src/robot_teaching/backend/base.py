@@ -64,6 +64,12 @@ class ArmBackend(ABC):
     @abstractmethod
     def send_gripper_mit(self, pos: float, kp: float | None = None, kd: float | None = None) -> None: ...
 
+    def read_torques(self) -> np.ndarray | None:
+        """Torque each arm motor last reported (N·m, length n_arm), or None if unavailable.
+
+        Called every tick for the scope, so it must not generate bus traffic."""
+        return None
+
     # ── control loop ──────────────────────────────────────────────────────
     @abstractmethod
     def start_loop(self, callback: Callable[[float], None], rate: float) -> None:

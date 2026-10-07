@@ -55,6 +55,41 @@ class Mode(str, Enum):
     PLAYBACK = "playback"
 
 
+class TraceBuffer:
+    """Ring buffer of one row per control tick for the scope: the controller clock, the
+    commanded and measured joint positions, the torque the MIT law asks for (evaluated on the
+    host from the gains, the errors and the feed-forward) and the torque the motors report."""
+
+    FIELDS = ("q_cmd", "q", "tau_cmd", "tau_meas")
+
+    def __init__(self, n: int, size: int) -> None:
+        self.n = int(n)
+        self.size = max(2, int(size))
+        self.t = np.zeros(self.size)
+        self.data = {f: np.full((self.size, self.n), np.nan) for f in self.FIELDS}
+        self.seq = 0                       # rows appended so far; row k lives at k % size
+
+    def append(self, t: float, **fields) -> None:
+        i = self.seq % self.size
+        self.t[i] = t
+        for f in self.FIELDS:
+            self.data[f][i] = fields[f]
+        self.seq += 1
+
+    def since(self, seq: int | None, joint: int, max_samples: int = 1000) -> dict:
+        """Rows of ``joint`` newer than sequence number ``seq`` (``None``: the newest rows),
+        at most ``max_samples``; ``"seq"`` in the result continues the stream."""
+        if not (0 <= joint < self.n):
+            raise ValueError(f"joint index {joint} out of range")
+        end = self.seq
+        start = max(0, end - self.size, end - int(max_samples), 0 if seq is None else int(seq))
+        idx = np.arange(start, end) % self.size
+        out: dict = {"joint": int(joint), "seq": int(end), "t": self.t[idx].tolist()}
+        for f in self.FIELDS:
+            out[f] = [None if np.isnan(v) else float(v) for v in self.data[f][idx, joint]]
+        return out
+
+
 @dataclass(frozen=True)
 class Snapshot:
     time: float
@@ -123,6 +158,7 @@ class TeachController:
     STOP_RAMP = 0.3        # s to ramp the playback speed to zero on stop
     SPEED_SLEW = 2.0       # 1/s, max rate of change of the playback speed scale
     MAX_START_GAP = 0.05   # rad, allowed gap between the arm and a trajectory's first sample
+    TRACE_SECONDS = 60.0   # s of scope history kept at the control rate
 
     def __init__(self, backend: ArmBackend, cfg: TeachingConfig, model: RobotModel | None = None) -> None:
         self.backend = backend
@@ -163,6 +199,7 @@ class TeachController:
         self._gripper_hand = False
         self._tau_g = np.zeros(n)
         self._tau_f = np.zeros(n)
+        self._trace = TraceBuffer(n, int(round(self.rate * self.TRACE_SECONDS)))
         self._integral = np.zeros(n)
         self._kp = self._hold_kp.copy()
         self._kd = self._hold_kd.copy()
@@ -272,6 +309,11 @@ class TeachController:
     def snapshot(self) -> Snapshot | None:
         with self._snap_lock:
             return self._snapshot
+
+    def trace_since(self, joint: int, seq: int | None = None, max_samples: int = 1000) -> dict:
+        """Scope samples of one joint recorded since sequence number ``seq`` (see :class:`TraceBuffer`)."""
+        with self._lock:
+            return self._trace.since(seq, int(joint), int(max_samples))
 
     def _send(self, kind: str, payload: Any = None) -> tuple[bool, str]:
         with self._lock:
@@ -596,6 +638,12 @@ class TeachController:
                     self._tau_f = self._friction_ff(qd_cmd)
                     tau = self._tau_g + self._tau_f
                 self.backend.send_arm_mit(q_cmd, qd_cmd, self._kp, self._kd, tau)
+                tau_meas = self.backend.read_torques()
+                self._trace.append(
+                    self._clock, q_cmd=q_cmd, q=self._q,
+                    tau_cmd=self._kp * (q_cmd - self._q) + self._kd * (qd_cmd - self._qd) + tau,
+                    tau_meas=np.nan if tau_meas is None else np.asarray(tau_meas, float)[: self.n],
+                )
                 if self.backend.has_gripper and self._gripper_target is not None:
                     if self._gripper_hand and self._gripper is not None and self._mode in (Mode.HOLD, Mode.FREE_DRIVE):
                         # Follow the hand: setpoint = measured position, light damping only.

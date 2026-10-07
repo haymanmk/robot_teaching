@@ -14,6 +14,7 @@
   let lastProgError = "";
   let poseFrame = "home";                       // "home": relative to the home position; "base": raw base frame
   try { poseFrame = localStorage.getItem("poseFrame") || "home"; } catch (_) { /* storage blocked */ }
+  let wsRef = null;                             // the open state websocket (the scope sends its joint selection on it)
 
   // ── API ────────────────────────────────────────────────────────────────
   async function api(method, path, body) {
@@ -347,16 +348,135 @@
   // A clicked button must not stay focused, or Enter/Space would repeat it (e.g. a jog step).
   document.addEventListener("click", (ev) => { const b = ev.target.closest && ev.target.closest("button"); if (b) b.blur(); });
 
+  // ── scope: one joint at the control rate ───────────────────────────────
+  // The server appends, to every state message, the samples of the selected joint recorded
+  // since the previous message; the client keeps the last SCOPE_WINDOW seconds and draws them.
+  const SCOPE_WINDOW = 5.0;                                       // s
+  const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
+  const scope = { joint: null, t: [], q_cmd: [], q: [], tau_cmd: [], tau_meas: [] };
+  let scopeDrawPending = false;
+
+  function buildScope() {
+    const sel = $("scope-joint");
+    config.joint_names.forEach((name, i) => {
+      const o = document.createElement("option"); o.value = String(i); o.textContent = `J${i + 1} ${name}`; sel.appendChild(o);
+    });
+    let saved = null;
+    try { saved = localStorage.getItem("scopeJoint"); } catch (_) { /* storage blocked */ }
+    if (saved !== null && saved !== "" && Number(saved) < config.joint_names.length) sel.value = saved;
+    sel.onchange = () => scopeSelect(sel.value === "" ? null : Number(sel.value));
+    scopeSelect(sel.value === "" ? null : Number(sel.value));
+    window.addEventListener("resize", requestScopeDraw);
+  }
+  function scopeSelect(j) {
+    scope.joint = j;
+    SCOPE_KEYS.forEach((k) => (scope[k] = []));
+    try { localStorage.setItem("scopeJoint", j === null ? "" : String(j)); } catch (_) { /* storage blocked */ }
+    scopeSendSelection();
+    requestScopeDraw();
+  }
+  function scopeSendSelection() {
+    if (wsRef && wsRef.readyState === WebSocket.OPEN) wsRef.send(JSON.stringify({ trace_joint: scope.joint }));
+  }
+  function scopeAppend(chunk) {
+    if (!chunk || chunk.joint !== scope.joint || !chunk.t.length) return;
+    SCOPE_KEYS.forEach((k) => { for (const v of chunk[k]) scope[k].push(v); });
+    const tEnd = scope.t[scope.t.length - 1];
+    let cut = 0;
+    while (cut < scope.t.length && scope.t[cut] < tEnd - SCOPE_WINDOW) cut++;
+    if (cut) SCOPE_KEYS.forEach((k) => scope[k].splice(0, cut));
+    requestScopeDraw();
+  }
+  function requestScopeDraw() {
+    if (scopeDrawPending) return;
+    scopeDrawPending = true;
+    requestAnimationFrame(() => { scopeDrawPending = false; drawScope(); });
+  }
+  function niceTicks(lo, hi, want) {
+    const span = hi - lo;
+    if (!(span > 0)) return [lo];
+    const raw = span / want, p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 5, 10].map((m) => m * p).find((s) => span / s <= want) || 10 * p;
+    const out = [];
+    for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-12; v += step) out.push(Math.abs(v) < step * 1e-6 ? 0 : v);
+    return out;
+  }
+  const fmtTick = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(2));
+  function drawStrip(canvas, tEnd, series, opts) {
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W || !H) return;
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const css = getComputedStyle(document.documentElement);
+    const lineColor = css.getPropertyValue("--line").trim() || "#262b36", muted = css.getPropertyValue("--muted").trim() || "#8b93a7";
+    const x0 = 52, x1 = W - 8, y0 = 6, y1 = H - 16;
+    let lo = Infinity, hi = -Infinity;
+    for (const s of series) for (const v of s.values) if (v !== null && Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    if (!Number.isFinite(lo)) { lo = -1; hi = 1; }
+    const minSpan = opts.minSpan || 1e-6;
+    if (opts.symmetric) { const m = Math.max(Math.abs(lo), Math.abs(hi), minSpan / 2); lo = -m; hi = m; }
+    if (hi - lo < minSpan) { const c = (hi + lo) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
+    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    const X = (t) => x1 - (x1 - x0) * (tEnd - t) / SCOPE_WINDOW;
+    const Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
+    ctx.lineWidth = 1; ctx.strokeStyle = lineColor; ctx.fillStyle = muted; ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (const v of niceTicks(lo, hi, 4)) {
+      const y = Y(v);
+      ctx.globalAlpha = v === 0 ? 1 : 0.6; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.fillText(fmtTick(v), x0 - 5, y);
+    }
+    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.globalAlpha = 0.6;
+    for (let s = 0; s <= SCOPE_WINDOW; s += 1) {
+      const x = X(tEnd - s); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+      if (s > 0) ctx.fillText(`−${s} s`, x, y1 + 3);
+    }
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.5; ctx.lineJoin = "round";
+    for (const s of series) {
+      ctx.strokeStyle = s.color; ctx.beginPath();
+      let pen = false;
+      for (let i = 0; i < scope.t.length; i++) {
+        const v = s.values[i];
+        if (v === null || !Number.isFinite(v)) { pen = false; continue; }
+        const x = X(scope.t[i]), y = Y(v);
+        if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+      }
+      ctx.stroke();
+    }
+  }
+  function drawScope() {
+    const css = getComputedStyle($("scope-card"));
+    const blue = css.getPropertyValue("--scope-cmd").trim() || "#3b82f6", amber = css.getPropertyValue("--scope-meas").trim() || "#d95926", accent = css.getPropertyValue("--scope-err").trim() || "#6ea8fe";
+    const n = scope.t.length;
+    const tEnd = n ? scope.t[n - 1] : 0;
+    const qCmd = scope.q_cmd.map((v) => (v === null ? null : deg(v)));
+    const q = scope.q.map((v) => (v === null ? null : deg(v)));
+    const err = scope.q.map((v, i) => (v === null || scope.q_cmd[i] === null ? null : deg(v - scope.q_cmd[i])));
+    drawStrip($("scope-pos"), tEnd, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
+    drawStrip($("scope-err"), tEnd, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
+    drawStrip($("scope-tau"), tEnd, [{ values: scope.tau_cmd, color: blue }, { values: scope.tau_meas, color: amber }], { symmetric: true, minSpan: 0.5 });
+    const ro = $("scope-readout");
+    if (!n) { ro.textContent = scope.joint === null ? "" : "waiting for samples…"; return; }
+    const last = n - 1, tm = scope.tau_meas[last];
+    ro.textContent = `error ${fmt(err[last], 3)}°   torque ${fmt(scope.tau_cmd[last], 2)} N·m` + (tm === null ? "" : ` (motor ${fmt(tm, 2)})`) + `   ${n} samples`;
+  }
+
   // ── websocket ──────────────────────────────────────────────────────────
   function connect() {
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/state`);
-    ws.onopen = () => $("ws-dot").classList.add("on");
-    ws.onclose = () => { $("ws-dot").classList.remove("on"); setTimeout(connect, 1000); };
+    wsRef = ws;
+    ws.onopen = () => { $("ws-dot").classList.add("on"); scopeSendSelection(); };
+    ws.onclose = () => { $("ws-dot").classList.remove("on"); if (wsRef === ws) wsRef = null; setTimeout(connect, 1000); };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       state = msg.state;
       if (msg.program_rev !== programRev) loadProgram();
       renderState();
+      if (msg.trace) scopeAppend(msg.trace);
     };
   }
 
@@ -364,7 +484,7 @@
     try { config = await api("GET", "/api/config"); } catch (e) { toast("cannot load config: " + e.message, true); return; }
     $("pb-speed").value = Math.round(config.playback.default_speed * 100); $("pb-speed-val").textContent = $("pb-speed").value;
     $("rec-speed").value = Math.round(config.playback.default_speed * 100);
-    buildJog(); wire(); await loadProgram(); await loadProgramList(); connect();
+    buildJog(); buildScope(); wire(); await loadProgram(); await loadProgramList(); connect();
   }
   init();
 })();

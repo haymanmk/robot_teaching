@@ -122,6 +122,13 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
    ramps the speed to zero and holds. **Space** (outside text fields) or **Esc** (anywhere)
    triggers the same graceful stop while the page has keyboard focus.
 
+**Scope.** The card at the bottom of the pendant shows one joint at the full control rate
+over the last 5 s: commanded and measured position, their difference, and the torque the
+MIT law asks for next to the torque the motor reports. Pick the joint in its drop-down. It is
+the tool for telling stick-slip (a sawtooth in the error at low speed) from bus trouble
+(gaps on every joint) from low damping (a 3–4 Hz ring on one joint). Programmatically, send
+`{"trace_joint": i}` on the `/ws/state` websocket and read the `trace` chunk of each message.
+
 Point semantics: a point's motion type describes how it is *reached* from the previous
 point (the first point from wherever the arm is). A **joint** point can be a **blend**
 (passed through without stopping); the arm stops at a point that has a dwell, changes the

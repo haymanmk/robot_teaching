@@ -56,6 +56,7 @@ class SimBackend(ArmBackend):
         self._cmd = None                       # (pos, vel, kp, kd, tau)
         self._gripper_cmd = None               # (pos, kp, kd)
         self._tau_ext = np.zeros(self._n)
+        self._tau_motor = np.zeros(self._n)
         self._push_until = 0.0
         self._sim_time = 0.0
         self._enabled = False
@@ -122,6 +123,11 @@ class SimBackend(ArmBackend):
         with self._lock:
             return self._qd.copy()
 
+    def read_torques(self) -> np.ndarray | None:
+        """Torque the simulated motors applied in the last physics step."""
+        with self._lock:
+            return self._tau_motor.copy()
+
     def send_arm_mit(self, q, qd, kp, kd, tau) -> None:
         self._cmd = tuple(np.asarray(x, dtype=float).reshape(-1)[: self._n].copy() for x in (q, qd, kp, kd, tau))
 
@@ -168,6 +174,7 @@ class SimBackend(ArmBackend):
             q = np.clip(q, self._model.lower, self._model.upper)
             qd = np.where(below | above, 0.0, qd)
             self._q, self._qd = q, qd
+            self._tau_motor = tau_explicit - (damping - self.viscous) * qd     # explicit part minus the motor's kd damping
 
             if self._has_gripper and self._enabled and self._gripper_cmd is not None:
                 target, kp, _ = self._gripper_cmd

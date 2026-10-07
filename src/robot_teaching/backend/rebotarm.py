@@ -89,6 +89,25 @@ class RebotArmBackend(ArmBackend):
             kd=None if kd is None else np.array([float(kd)]),
         )
 
+    def read_torques(self) -> np.ndarray | None:
+        """Torque from each arm motor's last decoded feedback frame (NaN where there is none).
+
+        Reads the cached state only, so it costs no bus traffic; how fresh the value is on RS
+        firmware depends on which frames motorbridge decodes, so compare it with the host-side
+        commanded torque before trusting it."""
+        motors = getattr(self.robot, "_motor_map", {})
+        out = []
+        for name in self.joint_names:
+            st = None
+            m = motors.get(name)
+            if m is not None:
+                try:
+                    st = m.get_state()
+                except Exception:
+                    st = None
+            out.append(float(st.torq) if st is not None else np.nan)
+        return np.array(out, dtype=float)
+
     # ── loop ──────────────────────────────────────────────────────────────
     def start_loop(self, callback: Callable[[float], None], rate: float) -> None:
         # Upstream passes the nominal period; measure the real one (clamped) so the

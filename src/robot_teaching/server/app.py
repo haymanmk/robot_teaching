@@ -322,16 +322,46 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
 
     @app.websocket("/ws/state")
     async def ws_state(ws: WebSocket):
+        """Controller state at ``control.state_stream_rate``.
+
+        A client may send ``{"trace_joint": i}`` (``null`` to stop) to receive, in every following
+        message, a ``trace`` chunk with the scope samples of joint ``i`` recorded at the control
+        rate since the previous message (the first chunk carries the latest ~2 s).
+        """
         await ws.accept()
         period = 1.0 / max(1.0, cfg.control.state_stream_rate)
+        sel: dict = {"joint": None, "seq": None}
+
+        async def receive_selection():
+            try:
+                while True:
+                    msg = await ws.receive_json()
+                    j = msg.get("trace_joint") if isinstance(msg, dict) else None
+                    try:
+                        j = None if j is None else int(j)
+                    except (TypeError, ValueError):
+                        j = None
+                    sel["joint"] = j if j is not None and 0 <= j < n else None
+                    sel["seq"] = None            # restart from the newest samples
+            except Exception:
+                return                            # closed or garbled: the sender sees the close
+
+        receiver = asyncio.create_task(receive_selection())
         try:
             while True:
                 s = controller.snapshot()
                 if s is not None:
-                    await ws.send_json({"state": s.to_dict(), "program_rev": state.rev})
+                    payload = {"state": s.to_dict(), "program_rev": state.rev}
+                    if sel["joint"] is not None:
+                        chunk = controller.trace_since(sel["joint"], sel["seq"])
+                        sel["seq"] = chunk["seq"]
+                        payload["trace"] = chunk
+                    await ws.send_json(payload)
                 await asyncio.sleep(period)
         except (WebSocketDisconnect, RuntimeError):
             return
+        finally:
+            receiver.cancel()
 
     # ── connection ────────────────────────────────────────────────────────
     @app.post("/api/connect")

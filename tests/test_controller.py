@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from robot_teaching.backend.sim import SimBackend
-from robot_teaching.controller import Mode, TeachController
+from robot_teaching.controller import Mode, TeachController, TraceBuffer
 from robot_teaching.planning import plan_program
 from robot_teaching.program import Program, TaughtPoint
 
@@ -291,3 +291,34 @@ def test_friction_feedforward_reduces_tracking_error(cfg, model):
     err_on, _ = _play_and_measure(_with_friction(cfg, 0.3), model)
     assert np.max(err_on) < 0.6 * np.max(err_off), (err_off, err_on)
     assert np.all(err_on <= err_off + 5e-4), (err_off, err_on)
+
+
+def test_trace_buffer_wraps_and_continues():
+    buf = TraceBuffer(n=2, size=8)
+    for k in range(20):
+        buf.append(0.01 * k, q_cmd=[k, -k], q=[k + 0.5, 0.0], tau_cmd=[1.0, 2.0], tau_meas=np.nan)
+    chunk = buf.since(None, 1)
+    assert chunk["seq"] == 20 and len(chunk["t"]) == 8, "only the newest rows survive a wrap"
+    assert chunk["q_cmd"] == [-k for k in range(12, 20)] and chunk["t"] == pytest.approx([0.01 * k for k in range(12, 20)])
+    assert chunk["tau_meas"] == [None] * 8, "NaN becomes null for JSON"
+    assert buf.since(15, 1)["q_cmd"] == [-15, -16, -17, -18, -19]
+    assert buf.since(20, 1)["t"] == [] and buf.since(None, 0, max_samples=3)["q"] == [17.5, 18.5, 19.5]
+    with pytest.raises(ValueError):
+        buf.since(None, 2)
+
+
+def test_trace_records_every_tick(rig, cfg):
+    sim, ctl = rig
+    s = settle(sim, ctl, 300)
+    traj = plan_program(ctl.model, _program(), s.q_target, cfg, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0)[0]
+    s = settle(sim, ctl, 400)
+    chunk = ctl.trace_since(1)
+    assert len(chunk["t"]) == 700 and np.all(np.diff(chunk["t"]) > 0)
+    assert chunk["q_cmd"][-1] == pytest.approx(s.q_target[1]) and chunk["q"][-1] == pytest.approx(s.q[1])
+    assert all(v is not None for v in chunk["tau_cmd"]) and all(v is not None for v in chunk["tau_meas"])
+    # The commanded torque is the MIT law on the host; while tracking it stays near the gravity torque.
+    assert abs(chunk["tau_cmd"][-1] - s.tau_g[1]) < 3.0
+    assert ctl.trace_since(1, chunk["seq"])["t"] == []
+    settle(sim, ctl, 10)
+    assert len(ctl.trace_since(1, chunk["seq"])["t"]) == 10

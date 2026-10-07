@@ -118,6 +118,34 @@ def test_websocket_stream(client):
     assert "state" in msg and "program_rev" in msg and msg["state"]["mode"] == "hold"
 
 
+def test_websocket_trace_selection(client):
+    with client.websocket_connect("/ws/state") as ws:
+        assert "trace" not in ws.receive_json()
+        ws.send_json({"trace_joint": 2})
+        client.sim.step(50)
+        for _ in range(10):
+            msg = ws.receive_json()
+            if "trace" in msg:
+                break
+        else:
+            pytest.fail("no trace chunk after selecting a joint")
+        tr = msg["trace"]
+        assert tr["joint"] == 2 and len(tr["t"]) > 0 and len(tr["q"]) == len(tr["t"]) == len(tr["tau_cmd"])
+        assert tr["q"][-1] == pytest.approx(msg["state"]["q"][2], abs=1e-3)
+        seq = tr["seq"]
+        client.sim.step(7)
+        nxt = ws.receive_json()
+        assert nxt["trace"]["seq"] >= seq and len(nxt["trace"]["t"]) <= 7 + 50
+        ws.send_json({"trace_joint": None})
+        for _ in range(10):
+            if "trace" not in ws.receive_json():
+                break
+        else:
+            pytest.fail("trace did not stop after deselecting")
+        ws.send_json({"trace_joint": 99})          # out of range: ignored
+        assert "trace" not in ws.receive_json()
+
+
 def test_manual_connect_home_disconnect(manual_client, cfg):
     c = manual_client
     st = c.get("/api/state").json()["state"]

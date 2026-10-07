@@ -168,6 +168,34 @@
     <div id="prog-problems" class="problems hidden"></div>
     <p class="hint">Record in <b>free drive</b> by dragging the arm, or in <b>hold</b> after fine adjustment. A <i>linear</i> point is reached on a straight line; a <i>blend</i> point is passed through without stopping (joint moves only). The gripper target is applied on arrival.</p>
   </section>
+
+  <!-- ───────────── bottom row: scope (one joint at the control rate) ───────────── -->
+  <section class="card scope" id="scope-card">
+    <div class="card-head">
+      <h2>Scope <span class="muted">one joint at the control rate, last 5 s</span></h2>
+      <div class="file-actions">
+        <label class="muted">Joint <select id="scope-joint"><option value="">off</option></select></label>
+        <span class="kv" id="scope-readout"></span>
+      </div>
+    </div>
+    <div class="scope-grid">
+      <div class="strip">
+        <div class="strip-title">Position <span class="muted">°</span>
+          <span class="lg"><i class="sw cmd"></i>commanded <i class="sw meas"></i>measured</span></div>
+        <canvas id="scope-pos"></canvas>
+      </div>
+      <div class="strip">
+        <div class="strip-title">Tracking error <span class="muted">° measured − commanded</span></div>
+        <canvas id="scope-err"></canvas>
+      </div>
+      <div class="strip">
+        <div class="strip-title">Torque <span class="muted">N·m</span>
+          <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span></div>
+        <canvas id="scope-tau"></canvas>
+      </div>
+    </div>
+    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame.</p>
+  </section>
 </main>
 <script src="/static/app.js"></script>
 </body>
