@@ -197,7 +197,7 @@
         <td><input class="pname" value="${escapeHtml(p.name)}"></td>
         <td><select><option value="joint"${p.motion === "joint" ? " selected" : ""}>Joint</option><option value="linear"${p.motion === "linear" ? " selected" : ""}>Linear</option></select></td>
         <td><input type="number" min="5" max="100" step="5" value="${Math.round(p.speed * 100)}"></td>
-        <td><input type="checkbox"${p.blend ? " checked" : ""}${p.motion === "linear" ? " disabled" : ""}></td>
+        <td><input type="checkbox"${p.blend ? " checked" : ""} title="pass through without stopping"></td>
         <td><input type="number" min="0" step="0.1" value="${p.dwell}"></td>
         <td><input type="number" step="0.1" value="${p.gripper.toFixed(2)}"></td>
         <td class="small muted">${pose}</td>
@@ -291,7 +291,6 @@
       }, false);
       if (r) { toast(`recorded ${r.point.name}`); loadProgram(); }
     };
-    $("rec-motion").onchange = () => { if ($("rec-motion").value === "linear") $("rec-blend").checked = false; };
     $("prog-name").onchange = () => { program.name = $("prog-name").value; };
     $("btn-new").onclick = async () => {
       if (program && program.dirty && !confirm("Discard unsaved changes?")) return;

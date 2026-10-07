@@ -20,6 +20,7 @@ limits:
   cartesian_angular_acceleration: 2.0    # rad/s^2
   joint_position_margin: 0.02            # rad kept inside the URDF joint limits
   planning_dt: 0.01                      # s, planner sample spacing (interpolated at control rate)
+  linear_blend_radius: 0.02              # m, how far before/after a blended linear point the corner is cut
 
 free_drive:
   # Gravity-compensated impedance mode used for drag teaching. Values follow the

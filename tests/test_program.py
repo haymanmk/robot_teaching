@@ -12,7 +12,7 @@ def test_point_validation():
     with pytest.raises(ValueError):
         TaughtPoint(q=[0] * 6, motion="spline")
     p = TaughtPoint(q=[0] * 6, motion="linear", blend=True)
-    assert p.blend is False, "linear points always stop"
+    assert p.blend is True, "linear points can be passed through (corner blend)"
 
 
 def test_program_roundtrip(tmp_path):

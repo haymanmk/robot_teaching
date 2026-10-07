@@ -46,6 +46,7 @@ class LimitsConfig:
     cartesian_angular_acceleration: float = 2.0
     joint_position_margin: float = 0.02
     planning_dt: float = 0.01
+    linear_blend_radius: float = 0.02     # m, corner cut at a pass-through linear point
 
 
 @dataclass
