@@ -81,7 +81,10 @@ class ArmBackend(ABC):
     # ── gains ─────────────────────────────────────────────────────────────
     @abstractmethod
     def hold_gains(self) -> tuple[np.ndarray, np.ndarray]:
-        """Stiff per-joint MIT (kp, kd) suitable for holding and tracking."""
+        """Stiff per-joint MIT (kp, kd) suitable for holding and tracking.
+
+        Read fresh on every call: a gains reload must see an edited configuration.
+        """
 
     @abstractmethod
     def gripper_gains(self) -> tuple[float, float]: ...

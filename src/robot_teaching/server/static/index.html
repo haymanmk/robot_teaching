@@ -92,6 +92,7 @@
       <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
       <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>
       <li>Start free drive from a clearance pose; contact with the table corrupts the gravity model.</li>
+      <li><b>Reload gains</b> (Scope card) re-reads the hold, free-drive and gripper kp/kd, <code>tau_scale</code> and the friction feed-forward from the YAML files and fades them in; no restart. Limits and the home position still need one.</li>
     </ul>
   </section>
   </div>
@@ -176,6 +177,7 @@
       <div class="file-actions">
         <label class="muted">Joint <select id="scope-joint"><option value="">off</option></select></label>
         <span class="kv" id="scope-readout"></span>
+        <button class="btn" id="btn-reload-gains" title="re-read kp/kd, tau_scale and friction from config/teaching.yaml and the hardware YAML and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
       </div>
     </div>
     <div class="scope-grid">

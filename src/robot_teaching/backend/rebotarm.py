@@ -2,7 +2,9 @@
 
 Motor ids, CAN channel, gains and the control rate come from the upstream
 hardware YAML (``config/rebotarm_rs.yaml`` by default). The arm and gripper
-groups are both driven in MIT mode.
+groups are both driven in MIT mode. The MIT gains are read from the YAML again
+on every ``hold_gains`` / ``gripper_gains`` call, so a gains reload in the
+controller picks up an edit without a restart.
 
 RS firmware notes (from the upstream calibration): positions must be requested
 explicitly every cycle (``get_positions`` does so) and the reported velocity is
@@ -19,6 +21,23 @@ import numpy as np
 from .base import ArmBackend, BackendError
 
 
+def mit_gains_from_yaml(hw_yaml: str | None, joint_names: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """``MIT: kp / kd`` of the named joints, read from the upstream hardware YAML now.
+
+    ``hw_yaml`` is the file given to the backend (``None`` = the one selected by the
+    vendor's ``config/rebotarm.yaml``), resolved by the vendor's own loader.
+    """
+    from reBotArm_control_py.actuator import load_cfg
+
+    joints = {j.name: j for j in load_cfg(hw_yaml)["joints"]}
+    missing = [name for name in joint_names if name not in joints]
+    if missing:
+        raise BackendError(f"the hardware YAML has no joint {missing[0]!r}")
+    kp = np.array([joints[name].kp for name in joint_names], dtype=float)
+    kd = np.array([joints[name].kd for name in joint_names], dtype=float)
+    return kp, kd
+
+
 class RebotArmBackend(ArmBackend):
     name = "rebotarm"
 
@@ -31,6 +50,7 @@ class RebotArmBackend(ArmBackend):
                 "(uv sync --extra hardware) and check the submodule"
             ) from e
         self.robot = RebotArm(hw_yaml)
+        self._hw_yaml = hw_yaml          # re-read for the gains; None = the vendor's rebotarm.yaml selection
         if "arm" not in self.robot.groups:
             raise BackendError("the hardware YAML has no 'arm' group")
         self._callback: Callable[[float], None] | None = None
@@ -130,12 +150,14 @@ class RebotArmBackend(ArmBackend):
 
     # ── gains ─────────────────────────────────────────────────────────────
     def hold_gains(self) -> tuple[np.ndarray, np.ndarray]:
-        return np.array(self.robot.arm._mit_kp, dtype=float).copy(), np.array(self.robot.arm._mit_kd, dtype=float).copy()
+        """Per-joint MIT (kp, kd) of the arm group, read from the hardware YAML now."""
+        return mit_gains_from_yaml(self._hw_yaml, self.joint_names)
 
     def gripper_gains(self) -> tuple[float, float]:
         if not self.has_gripper:
             return 0.0, 0.0
-        return float(self.robot.gripper._mit_kp[0]), float(self.robot.gripper._mit_kd[0])
+        kp, kd = mit_gains_from_yaml(self._hw_yaml, list(self.robot.gripper.joint_names))
+        return float(kp[0]), float(kd[0])
 
     def diagnostics(self) -> dict:
         out = {}

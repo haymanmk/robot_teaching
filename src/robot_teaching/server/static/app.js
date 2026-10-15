@@ -163,6 +163,7 @@
     $("btn-home").disabled = disc || !hold || !state.gains_settled || state.jogging;
     $("btn-pb-stop").disabled = !play;
     $("btn-record").disabled = disc || off || play;
+    $("btn-reload-gains").disabled = play;
 
     const pb = state.playback;
     $("pb-bar").style.width = pb ? `${(pb.progress * 100).toFixed(1)}%` : "0%";
@@ -283,6 +284,10 @@
     $("btn-stop").onclick = () => act("POST", "/api/stop", undefined, "stopping");
     $("btn-estop").onclick = () => { if (confirm("E-STOP disables all motors. A loaded arm will fall. Continue?")) act("POST", "/api/estop", undefined, "motors disabled"); };
     $("btn-enable").onclick = () => act("POST", "/api/enable", undefined, "motors enabled");
+    $("btn-reload-gains").onclick = async () => {
+      const r = await act("POST", "/api/gains/reload", undefined, false);
+      if (r) { toast(r.message); console.log("gains", r.gains); }
+    };
 
     $("btn-record").onclick = async () => {
       const r = await act("POST", "/api/program/points", {

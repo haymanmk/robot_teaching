@@ -158,6 +158,14 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 Motor ids, CAN channel, MIT gains and the gravity profiles stay in the vendor's
 `config/rebotarm_rs.yaml`.
 
+Both files are read when the server starts. The gains can be re-read without a restart:
+edit the YAML and press **Reload gains** (Scope card) or `POST /api/gains/reload`. That
+re-applies the hold, free-drive and gripper kp/kd, `free_drive.tau_scale`, the free-drive
+thresholds and the friction feed-forward, fading the gains in over
+`free_drive.transition_duration`; it works in hold, free drive and while disconnected, not
+during playback. Limits, jog steps and the home position still need a restart.
+`GET /api/gains` shows the values in use.
+
 **Calibrate on your arm before trusting the defaults:** the gripper `open_position`
 (the vendor examples use 5.0 rad), the free-drive gains (start with one joint enabled,
 from the "L" pose joint2 ≈ 0.7 rad, joint3 ≈ 1.1 rad), the playback limits (the

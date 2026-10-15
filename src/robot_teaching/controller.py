@@ -21,8 +21,10 @@ is the opening they set. Any gripper target command or playback ends hand
 mode, so a grasped object is never released by a mode change.
 
 Gain changes between modes are faded with a smoothstep so stiffness never
-jumps. Every error path falls back to HOLD at the measured position; motors are
-disabled only by an explicit e-stop.
+jumps; :meth:`TeachController.reload_gains` re-reads the tuning parameters
+(gains, ``tau_scale``, friction) from a fresh config and fades them in the same
+way, so gains can be tuned without restarting. Every error path falls back to
+HOLD at the measured position; motors are disabled only by an explicit e-stop.
 
 Threading: API commands run synchronously under the controller lock, which
 the tick also holds, so a command sees consistent state and returns a result
@@ -169,18 +171,7 @@ class TeachController:
         fd = cfg.free_drive
         self.rate = float(cfg.control.rate or backend.rate)
 
-        self._tau_scale = resolve_vector(fd.tau_scale, n, "free_drive.tau_scale")
-        self._free_kp = np.full(n, float(fd.kp))
-        self._free_kd = np.full(n, float(fd.kd))
-        hkp, hkd = backend.hold_gains()
-        self._hold_kp = resolve_vector(cfg.hold.kp, n, "hold.kp") if cfg.hold.kp is not None else np.asarray(hkp, float)
-        self._hold_kd = resolve_vector(cfg.hold.kd, n, "hold.kd") if cfg.hold.kd is not None else np.asarray(hkd, float)
-        self._coulomb = resolve_vector(cfg.friction.coulomb, n, "friction.coulomb")
-        self._friction_v0 = max(float(cfg.friction.velocity_scale), 1e-6)
-        gkp, gkd = backend.gripper_gains()
-        self._gripper_kp = float(cfg.gripper.kp) if cfg.gripper.kp is not None else gkp
-        self._gripper_kd = float(cfg.gripper.kd) if cfg.gripper.kd is not None else gkd
-        self._gripper_hand_kd = float(cfg.gripper.hand_kd)
+        self._load_tuning(cfg)      # hold / free-drive / gripper gains, tau_scale, friction (see reload_gains)
         self._margin = float(cfg.limits.joint_position_margin)
         self._jog_vel = float(cfg.jog.joint_velocity)
         self.home_q = resolve_vector(cfg.home.q, n, "home.q")
@@ -362,6 +353,84 @@ class TeachController:
         if not (0.0 < speed <= 1.0):
             return False, "speed must be in (0, 1]"
         return self._send("speed", float(speed))
+
+    # ── tuning parameters ─────────────────────────────────────────────────
+
+    def _load_tuning(self, cfg: TeachingConfig) -> None:
+        """Read the tuning parameters from ``cfg`` and the backend into the controller's arrays.
+
+        Everything is computed before anything is assigned, so a bad value leaves the
+        gains in use untouched.
+        """
+        n, fd = self.n, cfg.free_drive
+        hkp, hkd = self.backend.hold_gains()
+        gkp, gkd = self.backend.gripper_gains()
+        tau_scale = resolve_vector(fd.tau_scale, n, "free_drive.tau_scale")
+        free_kp = np.full(n, float(fd.kp))
+        free_kd = np.full(n, float(fd.kd))
+        hold_kp = resolve_vector(cfg.hold.kp, n, "hold.kp") if cfg.hold.kp is not None else np.asarray(hkp, float)
+        hold_kd = resolve_vector(cfg.hold.kd, n, "hold.kd") if cfg.hold.kd is not None else np.asarray(hkd, float)
+        if hold_kp.shape != (n,) or hold_kd.shape != (n,):
+            raise ValueError("hold gains must have one value per joint")
+        for name, arr in (("hold.kp", hold_kp), ("hold.kd", hold_kd), ("free_drive.kp", free_kp), ("free_drive.kd", free_kd)):
+            if np.any(~np.isfinite(arr)) or np.any(arr < 0.0):
+                raise ValueError(f"{name} must be finite and not negative")
+        coulomb = resolve_vector(cfg.friction.coulomb, n, "friction.coulomb")
+        gripper_kp = float(cfg.gripper.kp) if cfg.gripper.kp is not None else float(gkp)
+        gripper_kd = float(cfg.gripper.kd) if cfg.gripper.kd is not None else float(gkd)
+        self._tau_scale, self._free_kp, self._free_kd = tau_scale, free_kp, free_kd
+        self._hold_kp, self._hold_kd = hold_kp, hold_kd
+        self._coulomb = coulomb
+        self._friction_v0 = max(float(cfg.friction.velocity_scale), 1e-6)
+        self._gripper_kp, self._gripper_kd = gripper_kp, gripper_kd
+        self._gripper_hand_kd = float(cfg.gripper.hand_kd)
+
+    def reload_gains(self, cfg: TeachingConfig) -> tuple[bool, str]:
+        """Re-read the tuning parameters from ``cfg`` and the backend and apply them, no restart needed.
+
+        Covers the hold, free-drive and gripper gains, ``free_drive.tau_scale``, the friction
+        feed-forward and, since the new config replaces the old one, the free-drive
+        thresholds. In hold or free drive the mode's new gains fade in over
+        ``free_drive.transition_duration`` so stiffness never jumps; disconnected or disabled
+        they are stored for the next hold. Refused during playback. Limits, jog steps and the
+        home position keep their start-up values.
+        """
+        with self._lock:
+            if self._mode == Mode.PLAYBACK:
+                return False, "stop playback before reloading the gains"
+            try:
+                self._load_tuning(cfg)
+            except Exception as e:
+                return False, f"gains not changed: {type(e).__name__}: {e}"
+            self.cfg = cfg
+            fade = float(cfg.free_drive.transition_duration)
+            if self._mode == Mode.HOLD:
+                self._set_gains(self._hold_kp, self._hold_kd, fade)
+            elif self._mode == Mode.FREE_DRIVE:
+                self._set_gains(self._free_kp, self._free_kd, fade)
+            else:
+                self._set_gains(self._hold_kp, self._hold_kd, 0.0)
+            self._publish(self._last_dt)
+            return True, "gains reloaded: " + self._gains_summary()
+
+    def gains(self) -> dict[str, Any]:
+        """The tuning parameters in use (what :meth:`reload_gains` replaces) and the gains being sent."""
+        with self._lock:
+            return {
+                "hold": {"kp": self._hold_kp.tolist(), "kd": self._hold_kd.tolist()},
+                "free_drive": {"kp": self._free_kp.tolist(), "kd": self._free_kd.tolist(),
+                               "tau_scale": self._tau_scale.tolist()},
+                "friction": {"coulomb": self._coulomb.tolist(), "velocity_scale": self._friction_v0},
+                "gripper": {"kp": self._gripper_kp, "kd": self._gripper_kd, "hand_kd": self._gripper_hand_kd},
+                "current": {"kp": self._kp.tolist(), "kd": self._kd.tolist(), "settled": self._gain_t0 is None},
+            }
+
+    def _gains_summary(self) -> str:
+        def vec(a) -> str:
+            return "[" + " ".join(f"{x:g}" for x in np.asarray(a).reshape(-1)) + "]"
+        return (f"hold kp {vec(self._hold_kp)} kd {vec(self._hold_kd)}; "
+                f"free drive kp {self._free_kp[0]:g} kd {self._free_kd[0]:g}; "
+                f"friction {vec(self._coulomb)} N·m; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}")
 
     # ══════════════════════════════════════════════════════════════════════
     # control thread

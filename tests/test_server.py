@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robot_teaching.backend.sim import SimBackend
+from robot_teaching.config import load_config
 from robot_teaching.controller import TeachController
 from robot_teaching.program import ProgramStore
 from robot_teaching.server import create_app
@@ -273,3 +274,29 @@ def test_gripper_controls_in_free_drive(client):
     # Recording in free drive stores the current gripper target.
     r = client.post("/api/program/points", json={})
     assert r.status_code == 200 and r.json()["point"]["gripper"] == 5.0
+
+
+def test_gains_reload_rereads_the_config_file(model, tmp_path):
+    cfg_file = tmp_path / "teaching.yaml"
+    cfg_file.write_text("hold:\n  kp: 120.0\n  kd: 6.0\n")
+    cfg = load_config(cfg_file)
+    with _client(cfg, model, tmp_path) as c:
+        c.sim.step(200)
+        g = c.get("/api/gains").json()
+        assert g["hold"]["kp"] == [120.0] * 6 and g["current"]["settled"]
+        cfg_file.write_text("hold:\n  kp: 90.0\n  kd: 6.0\nfriction:\n  coulomb: 0.2\n")
+        r = c.post("/api/gains/reload")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] and body["source"] == str(cfg_file)
+        assert body["gains"]["hold"]["kp"] == [90.0] * 6 and body["gains"]["friction"]["coulomb"] == [0.2] * 6
+        assert not body["gains"]["current"]["settled"]
+        c.sim.step(400)
+        assert np.allclose(c.sim._cmd[2], 90.0)
+        # Refused during playback (the move home is a playback), allowed again once stopped.
+        assert c.post("/api/home", json={}).status_code == 200
+        c.sim.step(20)
+        assert c.post("/api/gains/reload").status_code == 409
+        c.post("/api/playback/stop")
+        c.sim.step(400)
+        assert c.post("/api/gains/reload").status_code == 200

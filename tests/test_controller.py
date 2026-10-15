@@ -322,3 +322,60 @@ def test_trace_records_every_tick(rig, cfg):
     assert ctl.trace_since(1, chunk["seq"])["t"] == []
     settle(sim, ctl, 10)
     assert len(ctl.trace_since(1, chunk["seq"])["t"]) == 10
+
+
+def _with_gains(cfg, hold_kp=None, hold_kd=None, free_kp=None, coulomb=None):
+    hold = dataclasses.replace(cfg.hold, kp=cfg.hold.kp if hold_kp is None else hold_kp,
+                               kd=cfg.hold.kd if hold_kd is None else hold_kd)
+    fd = dataclasses.replace(cfg.free_drive, kp=cfg.free_drive.kp if free_kp is None else free_kp)
+    fr = dataclasses.replace(cfg.friction, coulomb=cfg.friction.coulomb if coulomb is None else coulomb)
+    return dataclasses.replace(cfg, hold=hold, free_drive=fd, friction=fr)
+
+
+def test_reload_gains_fades_in_hold_and_free_drive(rig, cfg):
+    sim, ctl = rig
+    settle(sim, ctl, 100)
+    kp0 = sim._cmd[2].copy()
+    target = 133.0
+    ok, msg = ctl.reload_gains(_with_gains(cfg, hold_kp=[target] * 6, hold_kd=[7.0] * 6, free_kp=4.0, coulomb=0.25))
+    assert ok and msg.startswith("gains reloaded")
+    s = settle(sim, ctl, 10)                                  # 20 ms into the fade
+    assert not s.gains_settled, "the new gains fade in, they do not jump"
+    kp_mid = sim._cmd[2]
+    moving = np.abs(kp0 - target) > 1.0
+    assert moving.any()
+    assert np.all(kp_mid[moving] > np.minimum(kp0, target)[moving]) and np.all(kp_mid[moving] < np.maximum(kp0, target)[moving])
+    s = settle(sim, ctl, int(cfg.free_drive.transition_duration * 500) + 10)
+    assert s.gains_settled and np.allclose(sim._cmd[2], target) and np.allclose(sim._cmd[3], 7.0)
+    g = ctl.gains()
+    assert g["hold"]["kp"] == [target] * 6 and g["friction"]["coulomb"] == [0.25] * 6 and g["free_drive"]["kp"] == [4.0] * 6
+    # In free drive the compliant gains fade in the same way.
+    assert ctl.free_drive()[0]
+    settle(sim, ctl, 400)
+    assert ctl.reload_gains(_with_gains(cfg, hold_kp=[target] * 6, free_kp=2.0))[0]
+    s = settle(sim, ctl, 400)
+    assert s.mode == Mode.FREE_DRIVE.value and s.gains_settled and np.allclose(sim._cmd[2], 2.0)
+
+
+def test_reload_gains_rules(cfg, model):
+    sim = SimBackend(realtime=False, q0=L_POSE, model=model)
+    ctl = TeachController(sim, cfg)
+    new = _with_gains(cfg, hold_kp=[150.0] * 6)
+    ok, _ = ctl.reload_gains(new)                             # before the first connection: stored for the next hold
+    assert ok and ctl.gains()["hold"]["kp"] == [150.0] * 6
+    ctl.start()
+    sim.step(100)
+    assert np.allclose(sim._cmd[2], 150.0), "the connection holds with the reloaded gains"
+    prog = Program()
+    prog.add(TaughtPoint(q=L_POSE + [0.3, 0, 0, 0, 0, 0], gripper=0.0, speed=0.6))
+    traj = plan_program(model, prog, L_POSE, cfg, gripper_start=0.0)
+    assert ctl.play(traj, 1.0)[0]
+    sim.step(50)
+    ok, msg = ctl.reload_gains(new)
+    assert not ok and "playback" in msg
+    ctl.stop_motion()
+    sim.step(300)
+    bad = dataclasses.replace(new, hold=dataclasses.replace(new.hold, kp=[1.0, 2.0]))     # wrong length
+    ok, msg = ctl.reload_gains(bad)
+    assert not ok and "hold.kp" in msg and ctl.gains()["hold"]["kp"] == [150.0] * 6, "a bad config leaves the gains untouched"
+    ctl.shutdown()

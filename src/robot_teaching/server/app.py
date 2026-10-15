@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from ..config import TeachingConfig, resolve_vector
+from ..config import TeachingConfig, load_config, resolve_vector
 from ..controller import Mode, TeachController
 from ..model import Pose, RobotModel
 from ..planning import PlanningError, plan_program
@@ -315,6 +315,27 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
             "control_rate": controller.rate,
             "connected": controller.is_connected,
         }
+
+    @app.get("/api/gains")
+    def get_gains():
+        """The tuning parameters in use (hold / free-drive / gripper gains, tau_scale, friction) and the gains being sent."""
+        return controller.gains()
+
+    @app.post("/api/gains/reload")
+    def reload_gains():
+        """Re-read the gains from teaching.yaml and the hardware YAML and apply them without a restart.
+
+        Allowed in hold, free drive and while disconnected; refused during playback. The new
+        gains fade in over ``free_drive.transition_duration``. Limits, jog steps and the home
+        position are not reloaded.
+        """
+        source = cfg.source_path
+        try:
+            fresh = load_config(source)
+        except Exception as e:
+            raise HTTPException(400, f"could not read {source or 'the configuration'}: {type(e).__name__}: {e}")
+        res = _result(controller.reload_gains(fresh))
+        return res | {"gains": controller.gains(), "source": str(source) if source else None}
 
     @app.get("/api/state")
     def get_state():
