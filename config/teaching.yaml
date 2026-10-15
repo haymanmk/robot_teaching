@@ -74,6 +74,15 @@ gripper:
   kd: null
   hand_kd: 0.5                 # N·m·s/rad damping in hand mode (gripper follows your hand)
 
+can:
+  # SocketCAN bring-up when connecting to the real arm. The interface is the `channel` of
+  # the vendor's hardware YAML (can0). If it is down, Connect runs
+  #   ip link set can0 up type can bitrate <bitrate>
+  # through sudo -n (no password prompt; the README shows the sudoers rule that allows it).
+  # An interface that is already up is left alone. false = bring it up by hand as before.
+  bring_up: true
+  bitrate: 1000000             # bit/s
+
 playback:
   default_speed: 0.5           # initial speed scale (0..1]
   dwell_default: 0.0           # s

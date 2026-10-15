@@ -116,6 +116,19 @@ class HomeConfig:
 
 
 @dataclass
+class CanConfig:
+    """SocketCAN bring-up on Connect (real arm only).
+
+    The interface is the ``channel`` of the vendor's hardware YAML. If it is down, the backend
+    runs ``ip link set <channel> up type can bitrate <bitrate>`` (through ``sudo -n`` unless
+    the server runs as root) before opening the bus; an interface that is already up is left
+    alone. ``bring_up: false`` keeps the manual procedure.
+    """
+    bring_up: bool = True
+    bitrate: int = 1_000_000     # bit/s
+
+
+@dataclass
 class PlaybackConfig:
     default_speed: float = 0.5
     dwell_default: float = 0.0
@@ -130,6 +143,7 @@ class TeachingConfig:
     friction: FrictionConfig = field(default_factory=FrictionConfig)
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
+    can: CanConfig = field(default_factory=CanConfig)
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
     home: HomeConfig = field(default_factory=HomeConfig)
     programs_dir: str = "programs"
@@ -165,6 +179,7 @@ _SECTIONS = {
     "friction": FrictionConfig,
     "jog": JogConfig,
     "gripper": GripperConfig,
+    "can": CanConfig,
     "playback": PlaybackConfig,
     "home": HomeConfig,
 }

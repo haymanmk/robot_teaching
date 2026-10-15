@@ -24,7 +24,8 @@ def _serve(args: argparse.Namespace) -> int:
         q0 = np.array([float(v) for v in args.sim_q0.split(",")]) if args.sim_q0 else None
         backend = make_backend("sim", q0=q0, rate=cfg.control.rate)
     else:
-        backend = make_backend("rebotarm", hw_yaml=args.hw_yaml)
+        backend = make_backend("rebotarm", hw_yaml=args.hw_yaml,
+                               can_bring_up=cfg.can.bring_up and not args.no_can_up, can_bitrate=cfg.can.bitrate)
     controller = TeachController(backend, cfg)
     store = ProgramStore(cfg.programs_path())
     connect = args.connect or ("auto" if args.backend == "sim" else "manual")
@@ -71,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--port", type=int, default=8000)
     s.add_argument("--config", default=None, help="path to teaching.yaml")
     s.add_argument("--hw-yaml", default=None, help="upstream hardware YAML (default from rebotarm.yaml)")
+    s.add_argument("--no-can-up", action="store_true",
+                   help="do not bring the SocketCAN interface up on connect (overrides can.bring_up in teaching.yaml)")
     s.add_argument("--sim-q0", default="0,0.7,1.1,0,0,0", help="initial joint angles for the simulator, comma separated (rad)")
     s.add_argument("--connect", choices=["auto", "manual"], default=None,
                    help="connect to the arm at startup (auto) or from the UI's Connect button (manual); "

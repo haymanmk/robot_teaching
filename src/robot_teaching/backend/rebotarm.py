@@ -6,6 +6,9 @@ groups are both driven in MIT mode. The MIT gains are read from the YAML again
 on every ``hold_gains`` / ``gripper_gains`` call, so a gains reload in the
 controller picks up an edit without a restart.
 
+``connect`` can bring the SocketCAN interface up first (``can_bring_up``), so the
+server and the UI's Connect button work from a cold boot; see :mod:`.socketcan`.
+
 RS firmware notes (from the upstream calibration): positions must be requested
 explicitly every cycle (``get_positions`` does so) and the reported velocity is
 not in rad/s, so the controller estimates velocity by finite differences.
@@ -19,6 +22,7 @@ from typing import Callable
 import numpy as np
 
 from .base import ArmBackend, BackendError
+from .socketcan import ensure_can_up, is_socketcan_channel
 
 
 def mit_gains_from_yaml(hw_yaml: str | None, joint_names: list[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -41,7 +45,7 @@ def mit_gains_from_yaml(hw_yaml: str | None, joint_names: list[str]) -> tuple[np
 class RebotArmBackend(ArmBackend):
     name = "rebotarm"
 
-    def __init__(self, hw_yaml: str | None = None) -> None:
+    def __init__(self, hw_yaml: str | None = None, can_bring_up: bool = True, can_bitrate: int = 1_000_000) -> None:
         try:
             from reBotArm_control_py.actuator import RebotArm
         except ImportError as e:  # motorbridge missing, most likely
@@ -51,6 +55,8 @@ class RebotArmBackend(ArmBackend):
             ) from e
         self.robot = RebotArm(hw_yaml)
         self._hw_yaml = hw_yaml          # re-read for the gains; None = the vendor's rebotarm.yaml selection
+        self._can_bring_up = bool(can_bring_up)
+        self._can_bitrate = int(can_bitrate)
         if "arm" not in self.robot.groups:
             raise BackendError("the hardware YAML has no 'arm' group")
         self._callback: Callable[[float], None] | None = None
@@ -73,7 +79,15 @@ class RebotArmBackend(ArmBackend):
         return list(self.robot.arm.joint_names)
 
     # ── lifecycle ─────────────────────────────────────────────────────────
+    @property
+    def channel(self) -> str:
+        """The bus the vendor YAML names: a SocketCAN interface (``can0``) or a serial device."""
+        return str(self.robot._channel)
+
     def connect(self) -> None:
+        if self._can_bring_up and is_socketcan_channel(self.channel):
+            msg = ensure_can_up(self.channel, self._can_bitrate)       # BackendError if it cannot
+            print(f"[robot-teaching] {msg}", flush=True)
         self.robot.connect()
 
     def disconnect(self) -> None:

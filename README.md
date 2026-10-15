@@ -63,20 +63,33 @@ uv run robot-teaching serve --backend sim
 # UI  http://127.0.0.1:8000/     API docs  http://127.0.0.1:8000/docs
 ```
 
-Real arm. Bring up the CAN interface the way Seeed's wiki describes for your adapter
-(SocketCAN `can0` at 1 Mbit/s, e.g. `sudo ip link set can0 up type can bitrate 1000000`),
-check that `third_party/reBotArm_control_py/config/rebotarm.yaml` selects `rebotarm_rs.yaml`,
-and make sure the motor zero has been set once with the vendor's `example/2_zero_and_read.py`
-(the URDF zero is the fully extended rest pose). Then:
+Real arm. Check that `third_party/reBotArm_control_py/config/rebotarm.yaml` selects
+`rebotarm_rs.yaml`, and make sure the motor zero has been set once with the vendor's
+`example/2_zero_and_read.py` (the URDF zero is the fully extended rest pose). Then:
 
 ```bash
 uv run robot-teaching serve --backend rebotarm --host 0.0.0.0   # reachable from a tablet on the LAN
 ```
 
 With the real arm the server starts **disconnected**: open the UI and press **Connect**
-when the arm is powered and clear. Connecting opens the bus, switches every motor to MIT
-mode, enables them and holds the current pose with the stiff gains from the vendor's
-hardware YAML. Closing the bus switches the motors off (upstream behaviour), so
+when the arm is powered and clear. Connecting brings the CAN interface up if it is down,
+opens the bus, switches every motor to MIT mode, enables them and holds the current pose
+with the stiff gains from the vendor's hardware YAML.
+
+**CAN interface.** The SocketCAN interface named by the vendor YAML (`can0`) is brought up
+on Connect with `ip link set can0 up type can bitrate 1000000` (`can.bring_up` and
+`can.bitrate` in `config/teaching.yaml`; `--no-can-up` disables it for one run). `ip link`
+needs root rights, so the server runs it through `sudo -n`, which only works without a
+password prompt. Allow exactly that command once:
+
+```bash
+echo "$USER ALL=(root) NOPASSWD: $(which ip) link set can0 *" | sudo tee /etc/sudoers.d/robot-teaching-can
+```
+
+Without the rule, Connect fails with the command and this hint, and you can bring the
+interface up by hand the way Seeed's wiki describes for your adapter. An interface that is
+already up (by hand, or by a systemd-networkd `.network` file with `[CAN] BitRate=1M`) is
+left alone. Closing the bus switches the motors off (upstream behaviour), so
 **Disconnect** and **Ctrl+C** first move the arm **home**: a planned joint move to the home
 position in `config/teaching.yaml` (`home.q`, default the URDF zero, like the vendor's
 `safe_home`), waiting for the move to finish before the motors are released. Playback is
@@ -152,6 +165,7 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 | `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; 0 disables |
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
+| `can` | bring the SocketCAN interface up on Connect (`bring_up`) and at which `bitrate` |
 | `playback` | default speed scale |
 | `home` | home position (motor rad): Cartesian reference, target of **Go home**, and the pre-disconnect move; its speed and whether to move home on shutdown |
 
