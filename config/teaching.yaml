@@ -3,6 +3,10 @@
 # Motor ids, CAN channel, MIT gains and the gravity-compensation profiles live in
 # the upstream hardware file third_party/reBotArm_control_py/config/rebotarm_rs.yaml.
 # This file only holds what the teaching application adds on top.
+#
+# Values that belong to one machine (tuned gains, friction, the armature, your hardware
+# YAML) go in config/teaching.local.yaml, which git ignores. It is merged on top of this
+# file section by section: a key there replaces that key, the rest keeps the values here.
 
 control:
   rate: 500               # Hz, MIT setpoint streaming rate (upstream default)
@@ -111,3 +115,8 @@ home:
   on_shutdown: true            # Ctrl+C and Disconnect move the arm home first, then switch the motors off
 
 programs_dir: programs
+
+# Hardware YAML of the real arm: a path relative to this file (e.g. rebotarm_rs.local.yaml,
+# your copy of the vendor's config/rebotarm_rs.yaml with the motor gains of your arm) or an
+# absolute path. null = the file the vendor's config/rebotarm.yaml selects. --hw-yaml overrides.
+hardware_yaml: null

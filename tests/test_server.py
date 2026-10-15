@@ -300,3 +300,15 @@ def test_gains_reload_rereads_the_config_file(model, tmp_path):
         c.post("/api/playback/stop")
         c.sim.step(400)
         assert c.post("/api/gains/reload").status_code == 200
+
+
+
+def test_gains_reload_picks_up_a_local_override(model, tmp_path):
+    cfg_file = tmp_path / "teaching.yaml"
+    cfg_file.write_text("hold:\n  kp: 120.0\n  kd: 6.0\n")
+    with _client(load_config(cfg_file), model, tmp_path) as c:
+        c.sim.step(100)
+        (tmp_path / "teaching.local.yaml").write_text("hold:\n  kp: 80.0\n")
+        body = c.post("/api/gains/reload").json()
+        assert body["gains"]["hold"]["kp"] == [80.0] * 6 and body["gains"]["hold"]["kd"] == [6.0] * 6
+        assert body["local"] == str(tmp_path / "teaching.local.yaml")

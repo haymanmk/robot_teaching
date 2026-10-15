@@ -335,7 +335,8 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         except Exception as e:
             raise HTTPException(400, f"could not read {source or 'the configuration'}: {type(e).__name__}: {e}")
         res = _result(controller.reload_gains(fresh))
-        return res | {"gains": controller.gains(), "source": str(source) if source else None}
+        return res | {"gains": controller.gains(), "source": str(source) if source else None,
+                      "local": str(fresh.local_path) if fresh.local_path else None}
 
     @app.get("/api/state")
     def get_state():

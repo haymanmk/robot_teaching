@@ -7,6 +7,9 @@ dist/
 build/
 .pytest_cache/
 
+# Machine-specific configuration, merged on top of config/teaching.yaml (see README).
+config/*.local.yaml
+
 # Programs recorded on the robot are user data; keep the example only.
 programs/*.json
 !programs/example_pick_place.json

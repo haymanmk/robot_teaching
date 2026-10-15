@@ -24,13 +24,19 @@ def _serve(args: argparse.Namespace) -> int:
         q0 = np.array([float(v) for v in args.sim_q0.split(",")]) if args.sim_q0 else None
         backend = make_backend("sim", q0=q0, rate=cfg.control.rate)
     else:
-        backend = make_backend("rebotarm", hw_yaml=args.hw_yaml,
+        hw_yaml = args.hw_yaml or cfg.hardware_yaml
+        if hw_yaml and Path(hw_yaml).expanduser().exists():
+            hw_yaml = str(Path(hw_yaml).expanduser().resolve())      # the vendor resolves bare names in its own dir
+        backend = make_backend("rebotarm", hw_yaml=hw_yaml,
                                can_bring_up=cfg.can.bring_up and not args.no_can_up, can_bitrate=cfg.can.bitrate)
     controller = TeachController(backend, cfg)
     store = ProgramStore(cfg.programs_path())
     connect = args.connect or ("auto" if args.backend == "sim" else "manual")
     app = create_app(controller, cfg, store, backend_name=args.backend, connect_on_start=(connect == "auto"))
     print(f"[robot-teaching] backend={args.backend} rate={controller.rate:.0f} Hz programs={store.dir}")
+    print(f"[robot-teaching] config: {cfg.source_path or 'defaults'}"
+          + (f" + {cfg.local_path}" if cfg.local_path else " (no local override)")
+          + (f"; hardware YAML: {args.hw_yaml or cfg.hardware_yaml or 'vendor default'}" if args.backend == "rebotarm" else ""))
     print(f"[robot-teaching] connection: {connect}" + ("" if connect == "auto" else " (press Connect in the UI or POST /api/connect)"))
     print(f"[robot-teaching] UI: http://{args.host}:{args.port}/   API docs: http://{args.host}:{args.port}/docs")
     uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)

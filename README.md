@@ -175,6 +175,22 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 Motor ids, CAN channel, MIT gains and the gravity profiles stay in the vendor's
 `config/rebotarm_rs.yaml`.
 
+**Local overrides.** Values that belong to one machine, such as tuned gains, friction, the
+armature or the hardware YAML, go in `config/teaching.local.yaml`, which git ignores. It is
+merged on top of `config/teaching.yaml` section by section: a key in the local file replaces
+that key, everything else keeps the shipped value. The server prints which files it loaded,
+and the gains reload reads both again. For the motor gains of your arm, copy the vendor's
+`config/rebotarm_rs.yaml` to `config/rebotarm_rs.local.yaml` and point at it:
+
+```yaml
+# config/teaching.local.yaml
+hardware_yaml: rebotarm_rs.local.yaml     # relative to this file; --hw-yaml overrides
+hold:
+  kp: [60, 160, 160, 60, 60, 60]
+feedforward:
+  armature: [0.02, 0.05, 0.05, 0.01, 0.01, 0.01]
+```
+
 Both files are read when the server starts. The gains can be re-read without a restart:
 edit the YAML and press **Reload gains** (Scope card) or `POST /api/gains/reload`. That
 re-applies the hold, free-drive and gripper kp/kd, `free_drive.tau_scale`, the free-drive

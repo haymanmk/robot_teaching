@@ -3,6 +3,12 @@
 Every section is a dataclass with defaults, so a missing key in the YAML falls
 back to a safe value. Per-joint quantities accept a scalar or a list and are
 resolved to arrays by :func:`resolve_vector` once the joint count is known.
+
+Machine-specific values (tuned gains, the hardware YAML of one arm) go in a
+sibling ``<name>.local.yaml`` (``config/teaching.local.yaml``), which git
+ignores and :func:`load_config` merges on top of the base file, section by
+section: a key in the local file replaces that key of the section, the other
+keys keep the base values.
 """
 
 from __future__ import annotations
@@ -162,7 +168,9 @@ class TeachingConfig:
     playback: PlaybackConfig = field(default_factory=PlaybackConfig)
     home: HomeConfig = field(default_factory=HomeConfig)
     programs_dir: str = "programs"
+    hardware_yaml: str | None = None     # the real arm's hardware YAML (resolved path), None = the vendor's selection
     source_path: Path | None = None
+    local_path: Path | None = None       # the override file merged on top, if one was found
 
     def programs_path(self) -> Path:
         p = Path(self.programs_dir)
@@ -201,12 +209,49 @@ _SECTIONS = {
 }
 
 
-def load_config(path: str | Path | None = None) -> TeachingConfig:
-    """Load the YAML configuration; a missing file yields the defaults."""
+def local_override_path(cfg_path: Path) -> Path:
+    """``config/teaching.yaml`` -> ``config/teaching.local.yaml``."""
+    return cfg_path.with_name(f"{cfg_path.stem}.local{cfg_path.suffix}")
+
+
+def _merge_sections(base: dict, override: dict) -> dict:
+    """Merge ``override`` into ``base`` one level deep: section keys are replaced one by one."""
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = {**base[key], **value}
+        else:
+            base[key] = value
+    return base
+
+
+def _resolve_file(value: str | None, base_dir: Path) -> str | None:
+    """A path relative to ``base_dir`` when that file exists, else the value as given (the
+    vendor looks a bare name up in its own config directory)."""
+    if not value:
+        return None
+    p = Path(value).expanduser()
+    candidate = p if p.is_absolute() else base_dir / p
+    return str(candidate.resolve()) if candidate.exists() else str(value)
+
+
+def load_config(path: str | Path | None = None, local: str | Path | None = None,
+                use_local: bool = True) -> TeachingConfig:
+    """Load the YAML configuration; a missing file yields the defaults.
+
+    The sibling override ``<name>.local.yaml`` (or ``local``) is merged on top, section by
+    section, when it exists; ``use_local=False`` loads the base file alone.
+    """
     cfg_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
     data: dict = {}
     if cfg_path.exists():
         data = yaml.safe_load(cfg_path.read_text()) or {}
+    local_path: Path | None = None
+    if use_local:
+        local_path = Path(local) if local is not None else local_override_path(cfg_path)
+        if local_path.exists():
+            _merge_sections(data, yaml.safe_load(local_path.read_text()) or {})
+        else:
+            local_path = None
     if "home" not in data and isinstance(data.get("park"), dict):
         # Older configs called the home position "park".
         park = data["park"]
@@ -217,5 +262,7 @@ def load_config(path: str | Path | None = None) -> TeachingConfig:
         setattr(cfg, key, _build(cls, data.get(key)))
     if "programs_dir" in data:
         cfg.programs_dir = str(data["programs_dir"])
+    cfg.hardware_yaml = _resolve_file(data.get("hardware_yaml"), cfg_path.parent)
     cfg.source_path = cfg_path if cfg_path.exists() else None
+    cfg.local_path = local_path
     return cfg
