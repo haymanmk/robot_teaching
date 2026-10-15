@@ -134,7 +134,7 @@ def main() -> int:
         m = (t >= a - 1e-9) & (t <= b + 1e-9)
         seg_masks.append(m)
         if m.sum() < 3:
-            rows.append((k, p, b - a, 0.0, 0.0, 0.0, 0, 0.0))
+            rows.append((k, p, b - a, 0.0, 0.0, 0.0, 0, 0.0, 0.0))
             continue
         vl, al = vmax * p.speed, amax * p.speed
         rv = float(np.max(np.abs(qd[m]) / vl))
@@ -142,7 +142,8 @@ def main() -> int:
         ras = float(np.max(np.abs(qdd_s[m]) / al))
         flips = max(zero_crossings(qdd_s[m][:, j], 0.05 * al[j]) for j in range(n))
         pj = float(np.percentile(np.abs(jerk[m]), 95))
-        rows.append((k, p, b - a, rv, ra, ras, flips, pj))
+        astep = float(np.max(np.abs(np.diff(qdd[m], axis=0)) / al))      # acceleration jump between two samples
+        rows.append((k, p, b - a, rv, ra, ras, flips, pj, astep))
         if p.motion == "linear":
             q_prev = points[k - 1].q_array() if k > 0 else q_start
             T0, T1 = model.fk(q_prev), model.fk(p.q_array())
@@ -207,10 +208,12 @@ def main() -> int:
     for name, ok, det in results:
         print(f"[{'PASS' if ok else 'FAIL'}] {name:<12} {det}")
     print("\nper segment (ratios are relative to the limits scaled by the point speed):")
-    print(f"{'#':>2} {'point':<14} {'motion':<7} {'speed':>5} {'T [s]':>6} {'vel':>6} {'acc':>6} {'acc smoothed':>12} {'acc flips':>9} {'jerk p95':>9}")
-    for k, p, T, rv, ra, ras, flips, pj in rows:
-        print(f"{k:>2} {p.name:<14} {p.motion:<7} {p.speed:>5.2f} {T:>6.2f} {rv:>6.3f} {ra:>6.3f} {ras:>12.3f} {flips:>9d} {pj:>9.2f}")
+    print(f"{'#':>2} {'point':<14} {'motion':<7} {'speed':>5} {'T [s]':>6} {'vel':>6} {'acc':>6} {'acc smoothed':>12} {'acc flips':>9} {'jerk p95':>9} {'acc step':>9}")
+    for k, p, T, rv, ra, ras, flips, pj, astep in rows:
+        print(f"{k:>2} {p.name:<14} {p.motion:<7} {p.speed:>5.2f} {T:>6.2f} {rv:>6.3f} {ra:>6.3f} {ras:>12.3f} {flips:>9d} {pj:>9.2f} {astep:>9.3f}")
     print("\nacc flips = sign changes of the smoothed acceleration per joint (max over joints); a rest-to-rest move has 1.")
+    print("acc step  = largest change of the acceleration between two consecutive samples, relative to the limit; a "
+          "constant-acceleration ramp that switches on or off within one sample shows its whole budget here.")
 
     if args.out is None:
         print("\nno --out given: checks only. Add --out PREFIX (with matplotlib available) for the plots.")

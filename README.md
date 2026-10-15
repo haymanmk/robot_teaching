@@ -13,7 +13,8 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
 * **Play back with trajectory planning**, not joint-angle interpolation: joint moves are
   C² quintic splines through the via-points, time-scaled to per-joint velocity and
   acceleration limits; linear moves are straight lines in position with geodesic
-  orientation, tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
+  orientation under the same minimum-jerk time law (blended linear blocks run under a
+  velocity-limit curve), tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
   500 Hz in MIT mode with gravity and Coulomb-friction feed-forward. Speed override, loop and smooth stop.
 * **Simulator** with the same interface as the hardware, so the UI and planner run and
   are tested without the arm.
