@@ -88,6 +88,20 @@ class FrictionConfig:
 
 
 @dataclass
+class FeedforwardConfig:
+    """Inverse-dynamics feed-forward during playback, on top of gravity and friction.
+
+    ``inertia_scale × (M(q) q̈ + C(q, q̇) q̇ + armature · q̈)`` evaluated on the commanded
+    trajectory is added to the MIT torque, clipped to ``±max_torque`` per joint. ``armature``
+    is the rotor inertia reflected through the gear (rotor inertia × ratio², kg·m², per joint),
+    which the URDF lacks; identify it on the arm. ``inertia_scale: 0`` disables the term.
+    """
+    inertia_scale: float = 1.0
+    armature: Any = 0.0          # kg·m², scalar or one value per joint
+    max_torque: float = 3.0      # N·m, clip of the term per joint
+
+
+@dataclass
 class JogConfig:
     joint_steps_deg: list[float] = field(default_factory=lambda: [0.5, 1.0, 5.0])
     cartesian_steps_m: list[float] = field(default_factory=lambda: [0.001, 0.005, 0.02])
@@ -141,6 +155,7 @@ class TeachingConfig:
     free_drive: FreeDriveConfig = field(default_factory=FreeDriveConfig)
     hold: HoldConfig = field(default_factory=HoldConfig)
     friction: FrictionConfig = field(default_factory=FrictionConfig)
+    feedforward: FeedforwardConfig = field(default_factory=FeedforwardConfig)
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
     can: CanConfig = field(default_factory=CanConfig)
@@ -177,6 +192,7 @@ _SECTIONS = {
     "free_drive": FreeDriveConfig,
     "hold": HoldConfig,
     "friction": FrictionConfig,
+    "feedforward": FeedforwardConfig,
     "jog": JogConfig,
     "gripper": GripperConfig,
     "can": CanConfig,

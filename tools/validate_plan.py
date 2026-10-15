@@ -9,6 +9,8 @@ sampled trajectory and plots it, so the planner can be judged without the arm:
               the reported point time;
 * consistency the stored joint velocity equals the finite difference of the
               stored positions;
+* accel       the stored joint acceleration (the inertia feed-forward's input)
+              equals the finite difference of the stored velocities;
 * continuity  no jump in position or velocity between samples (a jump is a step
               that would need more than 1.5x the velocity or acceleration limit);
 * limits      per-segment peak velocity and acceleration against the configured
@@ -114,6 +116,10 @@ def main() -> int:
     check("consistency", float(np.max(dv)) < 0.05 * vmax.min(),
           f"max |qd - d(q)/dt| = {np.max(dv):.2e} rad/s, 99th percentile {np.percentile(dv, 99):.2e} rad/s "
           f"(limit for PASS: 5% of the slowest joint limit = {0.05*vmax.min():.3f})")
+    da = np.abs(traj.qdd - qdd)
+    check("accel", float(np.max(da)) < 0.05 * amax.min(),
+          f"max |qdd - d(qd)/dt| = {np.max(da):.2e} rad/s2, 99th percentile {np.percentile(da, 99):.2e} rad/s2 "
+          f"(limit for PASS: 5% of the slowest joint limit = {0.05*amax.min():.3f})")
 
     # ── continuity: jumps between samples ─────────────────────────────────
     v_step = np.abs(np.diff(q, axis=0)) / steps[:, None]          # velocity implied by consecutive positions

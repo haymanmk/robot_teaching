@@ -1,7 +1,9 @@
 """Simulated arm with the same interface as the hardware adapter.
 
-Each joint is a rigid body with the URDF inertia (diagonal of the mass matrix),
-the URDF gravity torque, viscous + Coulomb friction, and an MIT impedance motor
+The arm is the URDF rigid-body chain: the full joint-space inertia matrix (plus
+an optional ``armature`` per joint, the rotor inertia reflected through the
+gear), Coriolis/centrifugal and gravity torques, viscous + Coulomb friction per
+joint, and an MIT impedance motor
 ``tau = kp (q_cmd - q) + kd (qd_cmd - qd) + tau_ff`` clipped to the URDF effort
 limit. ``gravity_scale`` ≠ 1 emulates a model error; ``push()`` applies an
 external joint torque to emulate the operator's hand in free-drive.
@@ -38,6 +40,7 @@ class SimBackend(ArmBackend):
         gravity_scale: float = 1.0,
         viscous_friction: float = 0.2,
         coulomb_friction: float = 0.3,     # N·m, in the range measured on the RS build
+        armature: float | np.ndarray = 0.0,   # kg·m² per joint (or scalar), reflected rotor inertia
         q0: np.ndarray | None = None,
         model: RobotModel | None = None,
     ) -> None:
@@ -49,6 +52,7 @@ class SimBackend(ArmBackend):
         self.gravity_scale = float(gravity_scale)
         self.viscous = float(viscous_friction)
         self.coulomb = float(coulomb_friction)
+        self.armature = np.broadcast_to(np.asarray(armature, dtype=float), (self._n,)).copy()
 
         self._q = np.zeros(self._n) if q0 is None else np.asarray(q0, dtype=float)[: self._n].copy()
         self._qd = np.zeros(self._n)
@@ -160,15 +164,18 @@ class SimBackend(ArmBackend):
                 pos, vel, kp, kd, tau = self._cmd
                 tau_explicit = np.clip(kp * (pos - q) + kd * vel + tau, -self.effort, self.effort)
                 damping = damping + kd
-            g = self.gravity_scale * self._model.gravity(q)
+            g0 = self._model.gravity(q)
+            g = self.gravity_scale * g0
+            coriolis = self._model.nonlinear_effects(q, qd) - g0        # C(q, qd) qd
             coulomb = self.coulomb * np.tanh(qd / 0.05)
             tau_ext = self._tau_ext if self._sim_time < self._push_until else 0.0
-            M = np.maximum(self._model.mass_matrix_diag(q), 0.01)
-            a_explicit = (tau_explicit - g - coulomb + tau_ext) / M
-            # Semi-implicit Euler, two substeps, implicit damping.
+            M = self._model.mass_matrix(q) + np.diag(self.armature)
+            rhs = tau_explicit - g - coriolis - coulomb + tau_ext
+            # Semi-implicit Euler, two substeps, implicit damping: (M + h D) qd' = M qd + h rhs.
             h = dt / 2.0
+            A = M + h * np.diag(damping)
             for _ in range(2):
-                qd = (qd + a_explicit * h) / (1.0 + damping * h / M)
+                qd = np.linalg.solve(A, M @ qd + h * rhs)
                 q = q + qd * h
             below, above = q < self._model.lower, q > self._model.upper
             q = np.clip(q, self._model.lower, self._model.upper)

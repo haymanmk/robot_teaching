@@ -57,6 +57,20 @@ friction:
   coulomb: [0.0, 0.40, 0.37, 0.22, 0.16, 0.0]
   velocity_scale: 0.02   # rad/s, the term ramps in as coulomb * tanh(qd_cmd / velocity_scale)
 
+feedforward:
+  # Inverse-dynamics feed-forward during playback, on top of gravity and friction:
+  #   inertia_scale * (M(q)·qdd + C(q,qd)·qd + armature·qdd)
+  # evaluated on the commanded trajectory and clipped to ±max_torque per joint. With the
+  # URDF alone the term is small at the default limits (0.1-0.2 N·m); it grows with the
+  # acceleration limits. `armature` is the rotor inertia reflected through the gear
+  # (rotor inertia × gear ratio², kg·m², per joint), which the URDF does not contain and
+  # which can be as large as the link inertia: identify it on the arm (datasheet rotor
+  # inertia × ratio² as a start) and raise inertia_scale in steps with the scope open.
+  # Reloadable with the gains. 0 disables the term.
+  inertia_scale: 1.0
+  armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  max_torque: 3.0        # N·m
+
 jog:
   joint_steps_deg: [0.5, 1.0, 5.0]
   cartesian_steps_m: [0.001, 0.005, 0.02]

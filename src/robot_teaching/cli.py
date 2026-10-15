@@ -55,9 +55,10 @@ def _plan(args: argparse.Namespace) -> int:
     print(json.dumps(traj.summary(), indent=2))
     if args.csv:
         out = Path(args.csv)
-        np.savetxt(out, np.column_stack([traj.t, traj.q, traj.qd]), delimiter=",",
+        np.savetxt(out, np.column_stack([traj.t, traj.q, traj.qd, traj.qdd]), delimiter=",",
                    header="t," + ",".join(f"q{i+1}" for i in range(traj.n_joints)) + "," +
-                          ",".join(f"qd{i+1}" for i in range(traj.n_joints)), comments="")
+                          ",".join(f"qd{i+1}" for i in range(traj.n_joints)) + "," +
+                          ",".join(f"qdd{i+1}" for i in range(traj.n_joints)), comments="")
         print(f"wrote {out}")
     return 0
 

@@ -116,9 +116,34 @@ class RobotModel:
         pin.computeGeneralizedGravity(self.model, self.data, self.pad(q))
         return np.array(self.data.g[: self.n])
 
-    def mass_matrix_diag(self, q: np.ndarray) -> np.ndarray:
-        """Diagonal of the joint-space inertia matrix (used by the simulator)."""
+    def inertial_torque(self, q: np.ndarray, qd: np.ndarray, qdd: np.ndarray,
+                        armature: np.ndarray | None = None) -> np.ndarray:
+        """Inverse dynamics without gravity: ``M(q) q̈ + C(q, q̇) q̇`` of the URDF plus ``armature · q̈``.
+
+        ``armature`` is the per-joint rotor inertia reflected through the gear (rotor inertia ×
+        ratio², kg·m²), which the URDF does not carry. Evaluated on the commanded motion this is
+        the torque the motion needs beyond holding against gravity.
+        """
+        qp, vp, ap = self.pad(q), self.pad(np.asarray(qd, dtype=float)), self.pad(np.asarray(qdd, dtype=float))
+        tau = np.array(pin.rnea(self.model, self.data, qp, vp, ap))[: self.n]
+        pin.computeGeneralizedGravity(self.model, self.data, qp)
+        tau -= np.array(self.data.g[: self.n])
+        if armature is not None:
+            tau += np.asarray(armature, dtype=float)[: self.n] * np.asarray(qdd, dtype=float)[: self.n]
+        return tau
+
+    def mass_matrix(self, q: np.ndarray) -> np.ndarray:
+        """Joint-space inertia matrix M(q) of the arm joints, n × n (used by the simulator)."""
         pin.crba(self.model, self.data, self.pad(q))
         M = np.array(self.data.M)
         M = np.triu(M) + np.triu(M, 1).T
-        return np.diag(M)[: self.n].copy()
+        return M[: self.n, : self.n].copy()
+
+    def mass_matrix_diag(self, q: np.ndarray) -> np.ndarray:
+        """Diagonal of the joint-space inertia matrix."""
+        return np.diag(self.mass_matrix(q)).copy()
+
+    def nonlinear_effects(self, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
+        """``C(q, q̇) q̇ + g(q)`` for the arm joints, N·m (used by the simulator)."""
+        pin.nonLinearEffects(self.model, self.data, self.pad(q), self.pad(np.asarray(qd, dtype=float)))
+        return np.array(self.data.nle[: self.n])

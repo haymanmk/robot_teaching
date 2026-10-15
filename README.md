@@ -15,7 +15,9 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
   acceleration limits; linear moves are straight lines in position with geodesic
   orientation under the same minimum-jerk time law (blended linear blocks run under a
   velocity-limit curve), tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
-  500 Hz in MIT mode with gravity and Coulomb-friction feed-forward. Speed override, loop and smooth stop.
+  500 Hz in MIT mode with gravity, Coulomb-friction and inverse-dynamics feed-forward
+  (the URDF's inertia and Coriolis terms plus a per-joint armature for the reflected rotor
+  inertia, evaluated on the commanded motion). Speed override, loop and smooth stop.
 * **Simulator** with the same interface as the hardware, so the UI and planner run and
   are tested without the arm.
 
@@ -163,6 +165,7 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 | `free_drive` | compliant gains, integral term, `tau_scale` per joint, release / re-lock thresholds, velocity filter |
 | `hold` | stiff gains (null = the vendor's per-joint MIT gains) |
 | `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; 0 disables |
+| `feedforward` | inverse-dynamics feed-forward during playback: `inertia_scale` (0 disables), per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
 | `can` | bring the SocketCAN interface up on Connect (`bring_up`) and at which `bitrate` |
@@ -175,7 +178,7 @@ Motor ids, CAN channel, MIT gains and the gravity profiles stay in the vendor's
 Both files are read when the server starts. The gains can be re-read without a restart:
 edit the YAML and press **Reload gains** (Scope card) or `POST /api/gains/reload`. That
 re-applies the hold, free-drive and gripper kp/kd, `free_drive.tau_scale`, the free-drive
-thresholds and the friction feed-forward, fading the gains in over
+thresholds, the friction feed-forward and the inverse-dynamics feed-forward, fading the gains in over
 `free_drive.transition_duration`; it works in hold, free drive and while disconnected, not
 during playback. Limits, jog steps and the home position still need a restart.
 `GET /api/gains` shows the values in use.

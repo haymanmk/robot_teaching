@@ -11,7 +11,8 @@ Modes
                on the locked target), FOLLOW while being pushed (target follows
                the measured position).
 ``PLAYBACK``   streams a planned :class:`Trajectory` as ``(q, q̇)`` setpoints
-               with gravity and Coulomb-friction feed-forward; a speed scale slews
+               with gravity, Coulomb-friction and inverse-dynamics (inertia) feed-forward
+               evaluated on the commanded motion; a speed scale slews
                smoothly, and a stop ramps the speed to zero before returning to HOLD.
 
 The gripper is held stiffly at its target, except in *hand mode* (HOLD and
@@ -108,6 +109,7 @@ class Snapshot:
     gripper_hand: bool
     tau_g: np.ndarray
     tau_f: np.ndarray
+    tau_i: np.ndarray
     ee_speed: tuple[float, float]
     free_drive_status: str
     gains_settled: bool
@@ -132,6 +134,7 @@ class Snapshot:
             "gripper_hand": self.gripper_hand,
             "tau_g": self.tau_g.tolist(),
             "tau_f": self.tau_f.tolist(),
+            "tau_i": self.tau_i.tolist(),
             "ee_speed": list(self.ee_speed),
             "free_drive_status": self.free_drive_status,
             "gains_settled": self.gains_settled,
@@ -190,6 +193,7 @@ class TeachController:
         self._gripper_hand = False
         self._tau_g = np.zeros(n)
         self._tau_f = np.zeros(n)
+        self._tau_i = np.zeros(n)
         self._trace = TraceBuffer(n, int(round(self.rate * self.TRACE_SECONDS)))
         self._integral = np.zeros(n)
         self._kp = self._hold_kp.copy()
@@ -376,12 +380,18 @@ class TeachController:
             if np.any(~np.isfinite(arr)) or np.any(arr < 0.0):
                 raise ValueError(f"{name} must be finite and not negative")
         coulomb = resolve_vector(cfg.friction.coulomb, n, "friction.coulomb")
+        ff = cfg.feedforward
+        ff_scale, ff_clip = float(ff.inertia_scale), float(ff.max_torque)
+        armature = resolve_vector(ff.armature, n, "feedforward.armature")
+        if ff_scale < 0.0 or np.any(armature < 0.0) or ff_clip <= 0.0:
+            raise ValueError("feedforward.inertia_scale and armature must not be negative and max_torque must be positive")
         gripper_kp = float(cfg.gripper.kp) if cfg.gripper.kp is not None else float(gkp)
         gripper_kd = float(cfg.gripper.kd) if cfg.gripper.kd is not None else float(gkd)
         self._tau_scale, self._free_kp, self._free_kd = tau_scale, free_kp, free_kd
         self._hold_kp, self._hold_kd = hold_kp, hold_kd
         self._coulomb = coulomb
         self._friction_v0 = max(float(cfg.friction.velocity_scale), 1e-6)
+        self._ff_scale, self._armature, self._ff_clip = ff_scale, armature, ff_clip
         self._gripper_kp, self._gripper_kd = gripper_kp, gripper_kd
         self._gripper_hand_kd = float(cfg.gripper.hand_kd)
 
@@ -421,6 +431,8 @@ class TeachController:
                 "free_drive": {"kp": self._free_kp.tolist(), "kd": self._free_kd.tolist(),
                                "tau_scale": self._tau_scale.tolist()},
                 "friction": {"coulomb": self._coulomb.tolist(), "velocity_scale": self._friction_v0},
+                "feedforward": {"inertia_scale": self._ff_scale, "armature": self._armature.tolist(),
+                                "max_torque": self._ff_clip},
                 "gripper": {"kp": self._gripper_kp, "kd": self._gripper_kd, "hand_kd": self._gripper_hand_kd},
                 "current": {"kp": self._kp.tolist(), "kd": self._kd.tolist(), "settled": self._gain_t0 is None},
             }
@@ -430,7 +442,8 @@ class TeachController:
             return "[" + " ".join(f"{x:g}" for x in np.asarray(a).reshape(-1)) + "]"
         return (f"hold kp {vec(self._hold_kp)} kd {vec(self._hold_kd)}; "
                 f"free drive kp {self._free_kp[0]:g} kd {self._free_kd[0]:g}; "
-                f"friction {vec(self._coulomb)} N·m; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}")
+                f"friction {vec(self._coulomb)} N·m; inertia feed-forward x{self._ff_scale:g} "
+                f"armature {vec(self._armature)}; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}")
 
     # ══════════════════════════════════════════════════════════════════════
     # control thread
@@ -438,6 +451,15 @@ class TeachController:
 
     def _gravity(self, q: np.ndarray) -> np.ndarray:
         return self._tau_scale * self.model.gravity(q)
+
+    def _inertia_ff(self, q_cmd: np.ndarray, qd_cmd: np.ndarray, qdd_cmd: np.ndarray) -> np.ndarray:
+        """Inverse-dynamics feed-forward on the commanded motion: the torque the motion needs
+        beyond gravity (``M(q) q̈ + C(q, q̇) q̇`` of the URDF plus the reflected rotor inertia),
+        scaled and clipped. Zero when the term is off or nothing moves."""
+        if self._ff_scale <= 0.0 or not (np.any(qdd_cmd) or np.any(qd_cmd)):
+            return np.zeros(self.n)
+        tau = self._ff_scale * self.model.inertial_torque(q_cmd, qd_cmd, qdd_cmd, self._armature)
+        return np.clip(tau, -self._ff_clip, self._ff_clip)
 
     def _friction_ff(self, qd_cmd: np.ndarray) -> np.ndarray:
         """Coulomb friction feed-forward: the friction each joint is about to meet, with the
@@ -638,7 +660,8 @@ class TeachController:
         self._fd_status = "FOLLOW" if self._fd_following else "LOCKED"
         return self._q_target, np.zeros(self.n)
 
-    def _update_playback(self, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    def _update_playback(self, dt: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Advance the playback clock; return the commanded position, velocity and acceleration."""
         pb = self._pb
         assert pb is not None
         # Slew the speed scale so velocity never jumps.
@@ -665,14 +688,16 @@ class TeachController:
             else:
                 q_end = traj.q[-1].copy()
                 self._enter_hold(q_end, 0.0)
-                return q_end, np.zeros(self.n)
-        q_cmd, qd_cmd = traj.sample(pb.s)
+                return q_end, np.zeros(self.n), np.zeros(self.n)
+        q_cmd, qd_cmd, qdd_cmd = traj.sample_full(pb.s)
         pb.q_cmd = q_cmd
         self._q_target = q_cmd
         if pb.stopping and pb.speed <= 0.0:
             self._enter_hold(q_cmd, 0.0)
-            return q_cmd, np.zeros(self.n)
-        return q_cmd, qd_cmd * pb.speed
+            return q_cmd, np.zeros(self.n), np.zeros(self.n)
+        # Time scaling by the speed: velocity scales with it, acceleration with its square (the
+        # small extra acceleration while the speed itself slews is ignored).
+        return q_cmd, qd_cmd * pb.speed, qdd_cmd * (pb.speed * pb.speed)
 
     # ── the tick ──────────────────────────────────────────────────────────
 
@@ -692,6 +717,7 @@ class TeachController:
                     self._ee_speed = (0.0, 0.0)
                 blend = self._gain_blend()
                 self._tau_f = np.zeros(self.n)
+                self._tau_i = np.zeros(self.n)
 
                 if self._mode == Mode.DISABLED:
                     self._publish(dt)
@@ -703,9 +729,10 @@ class TeachController:
                     q_cmd, qd_cmd = self._update_free_drive(dt, blend)
                     tau = self._tau_g + self._integral
                 else:
-                    q_cmd, qd_cmd = self._update_playback(dt)
+                    q_cmd, qd_cmd, qdd_cmd = self._update_playback(dt)
                     self._tau_f = self._friction_ff(qd_cmd)
-                    tau = self._tau_g + self._tau_f
+                    self._tau_i = self._inertia_ff(q_cmd, qd_cmd, qdd_cmd)
+                    tau = self._tau_g + self._tau_f + self._tau_i
                 self.backend.send_arm_mit(q_cmd, qd_cmd, self._kp, self._kd, tau)
                 tau_meas = self.backend.read_torques()
                 self._trace.append(
@@ -768,6 +795,7 @@ class TeachController:
             gripper_hand=self._gripper_hand,
             tau_g=self._tau_g.copy(),
             tau_f=self._tau_f.copy(),
+            tau_i=self._tau_i.copy(),
             ee_speed=self._ee_speed,
             free_drive_status=self._fd_status,
             gains_settled=self._gain_t0 is None,

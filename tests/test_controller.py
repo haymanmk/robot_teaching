@@ -268,7 +268,7 @@ def _play_and_measure(cfg, model):
         moving = (np.abs(vel) > 0.1) & active
         # The term carries the sign of the commanded velocity and is bounded by the configured friction.
         assert np.all(np.sign(s.tau_f[moving]) == np.sign(vel[moving]))
-        assert np.allclose(tau, s.tau_g + s.tau_f)
+        assert np.allclose(tau, s.tau_g + s.tau_f + s.tau_i)
         err = np.maximum(err, np.abs(s.q - s.q_target))
         tau_f = np.maximum(tau_f, np.abs(s.tau_f))
     assert np.all(ctl.snapshot().tau_f == 0.0), "back in hold the term is zero"
@@ -379,3 +379,55 @@ def test_reload_gains_rules(cfg, model):
     ok, msg = ctl.reload_gains(bad)
     assert not ok and "hold.kp" in msg and ctl.gains()["hold"]["kp"] == [150.0] * 6, "a bad config leaves the gains untouched"
     ctl.shutdown()
+
+
+def _fast(cfg, scale=3.0, armature=0.0, inertia_scale=1.0, max_torque=3.0):
+    """The test config with joint limits scaled up, the simulator's friction and gravity, and the feed-forward set."""
+    lim = cfg.limits
+    vmax = (np.asarray(lim.joint_velocity, float) * scale).tolist()
+    amax = (np.asarray(lim.joint_acceleration, float) * scale).tolist()
+    return dataclasses.replace(
+        cfg,
+        limits=dataclasses.replace(lim, joint_velocity=vmax, joint_acceleration=amax),
+        friction=dataclasses.replace(cfg.friction, coulomb=0.3, velocity_scale=0.05),
+        free_drive=dataclasses.replace(cfg.free_drive, tau_scale=1.0),
+        feedforward=dataclasses.replace(cfg.feedforward, inertia_scale=inertia_scale, armature=armature,
+                                        max_torque=max_torque),
+    )
+
+
+def _tracking(cfg, model, armature):
+    """Play the test program on a simulator with ``armature``; return (max |q - q_cmd|, max |tau_i|) per joint."""
+    sim = SimBackend(realtime=False, q0=L_POSE, model=model, armature=armature)
+    ctl = TeachController(sim, cfg)
+    ctl.start()
+    s = settle(sim, ctl, 300)
+    assert np.all(s.tau_i == 0.0), "nothing moves in hold: no inertia term"
+    traj = plan_program(ctl.model, _program(), s.q_target, cfg, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0)[0]
+    err, tau_i = np.zeros(ctl.n), np.zeros(ctl.n)
+    for _ in range(int(traj.duration * 500) + 1000):
+        s = settle(sim, ctl, 1)
+        if s.mode != Mode.PLAYBACK.value:
+            break
+        err = np.maximum(err, np.abs(s.q - s.q_target))
+        tau_i = np.maximum(tau_i, np.abs(s.tau_i))
+    assert s.mode == Mode.HOLD.value and np.all(s.tau_i == 0.0), "back in hold the term is zero"
+    ctl.shutdown()
+    return err, tau_i
+
+
+def test_inertia_feedforward_reduces_acceleration_error(cfg, model):
+    armature = 0.1          # kg·m², a reflected rotor inertia of the order of the link inertia
+    err_off, tau_off = _tracking(_fast(cfg, armature=armature, inertia_scale=0.0), model, armature)
+    err_on, tau_on = _tracking(_fast(cfg, armature=armature, inertia_scale=1.0), model, armature)
+    assert np.all(tau_off == 0.0) and np.max(tau_on) > 0.3
+    moving = err_off > 2e-3
+    assert moving.any()
+    assert np.max(err_on[moving] / err_off[moving]) < 0.6, (err_off, err_on)
+    assert np.all(err_on <= err_off + 5e-4), (err_off, err_on)
+    # The clip bounds the term and the gains report carries the settings.
+    _, tau_clipped = _tracking(_fast(cfg, armature=armature, inertia_scale=1.0, max_torque=0.1), model, armature)
+    assert np.max(tau_clipped) <= 0.1 + 1e-9
+    ctl = TeachController(SimBackend(realtime=False, q0=L_POSE, model=model), _fast(cfg, armature=armature))
+    assert ctl.gains()["feedforward"] == {"inertia_scale": 1.0, "armature": [armature] * 6, "max_torque": 3.0}

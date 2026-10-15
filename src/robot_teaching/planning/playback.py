@@ -87,7 +87,7 @@ def plan_program(
         stops = [True] + [bool(s) for s in joint_stops]
         speeds = [p.speed for p in joint_block]
         res = plan_joint_path(waypoints, stops, vmax, amax, dt, speeds)
-        traj = Trajectory(res.t, res.q, res.qd)
+        traj = Trajectory(res.t, res.q, res.qd, qdd=res.qdd)
         pieces.append(traj)
         point_times.extend(elapsed + float(res.knot_times[k + 1]) for k in range(len(joint_block)))
         elapsed += traj.duration

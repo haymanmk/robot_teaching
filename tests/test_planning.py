@@ -236,3 +236,21 @@ def test_linear_segment_time_law_is_minimum_jerk(model, limits):
         # percent of the budget (the constant-acceleration ramps this replaces switched ~25% of it per sample).
         qdd = np.gradient(tr.qd, tr.t, axis=0)
         assert np.max(np.abs(np.diff(qdd, axis=0)) / (amax * speed)) < 0.15
+
+
+def test_trajectory_carries_acceleration(model, cfg, limits):
+    _, amax = limits
+    prog = Program()
+    prog.add(TaughtPoint(q=L_POSE + [0.3, 0, 0, 0, 0, 0], gripper=0.0, speed=0.6))
+    prog.add(TaughtPoint(q=L_POSE + [0.5, 0.2, 0, 0, 0, 0], gripper=0.0, speed=0.6, blend=True))
+    prog.add(TaughtPoint(q=L_POSE + [0.2, 0.3, 0.1, 0, 0, 0], gripper=2.0, speed=0.6))
+    prog.add(TaughtPoint(q=L_POSE + [0.2, 0.2, 0.2, 0.1, 0, 0], gripper=2.0, motion="linear", speed=0.5, dwell=0.4))
+    traj = plan_program(model, prog, L_POSE, cfg, gripper_start=0.0)
+    assert traj.qdd.shape == traj.q.shape
+    fd = np.gradient(traj.qd, traj.t, axis=0)
+    assert np.max(np.abs(traj.qdd - fd)) < 0.05 * amax.min(), "stored acceleration matches the velocity samples"
+    q, qd, qdd = traj.sample_full(0.5 * traj.point_times[0])
+    assert q.shape == qd.shape == qdd.shape == (6,) and np.max(np.abs(qdd)) > 0.0
+    assert np.allclose(traj.sample_full(traj.duration + 1.0)[2], 0.0)
+    # Pieces built without acceleration data (holds) default to zero.
+    assert np.all(Trajectory(np.array([0.0, 1.0]), np.zeros((2, 1)), np.zeros((2, 1))).qdd == 0.0)

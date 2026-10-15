@@ -26,3 +26,15 @@ def test_relative_pose_offsets_along_base_axes(model):
     T2 = pin.SE3(Rz @ T_home_tilted.rotation, T_home_tilted.translation + np.array([0.0, 0.0, 0.05]))
     rel2 = Pose.relative(T_home_tilted, T2)
     assert np.allclose(rel2.xyz, [0.0, 0.0, 0.05]) and rel2.rpy[2] == pytest.approx(np.deg2rad(10.0))
+
+
+def test_inertial_torque_is_rnea_without_gravity_plus_armature(model):
+    q = L_POSE
+    qd = np.array([0.5, -0.3, 0.2, 0.1, -0.4, 0.3])
+    qdd = np.array([2.0, -1.0, 1.5, 0.5, -2.0, 1.0])
+    assert np.allclose(model.inertial_torque(q, np.zeros(6), np.zeros(6)), 0.0)
+    tau = model.inertial_torque(q, qd, qdd)
+    ref = np.array(pin.rnea(model.model, model.data, model.pad(q), model.pad(qd), model.pad(qdd)))[:6] - model.gravity(q)
+    assert np.allclose(tau, ref)
+    armature = np.array([0.1, 0.2, 0.0, 0.05, 0.0, 0.0])
+    assert np.allclose(model.inertial_torque(q, qd, qdd, armature) - tau, armature * qdd)

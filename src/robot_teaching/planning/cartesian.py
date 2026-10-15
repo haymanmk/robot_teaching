@@ -210,8 +210,8 @@ def plan_linear_block(
         q_end = Q[-1]
         T_fix = max(t_min, float(np.max(MIN_JERK_PEAK_VEL * np.abs(q_end - q_start) / v_lim)))
         t = _times(T_fix, dt)
-        qf, qdf, _ = quintic_eval(quintic_coeffs(q_start, 0.0, 0.0, q_end, 0.0, 0.0, T_fix), t)
-        traj = Trajectory(t, qf, qdf)
+        qf, qdf, qddf = quintic_eval(quintic_coeffs(q_start, 0.0, 0.0, q_end, 0.0, 0.0, T_fix), t)
+        traj = Trajectory(t, qf, qdf, qdd=qddf)
         return LinearBlockResult(traj, [traj.duration] * m, 0.0, 1.0)
 
     if m == 1:
@@ -275,13 +275,13 @@ def plan_linear_block(
         )
     if mismatch <= _END_TOL:
         q[-1] = q_end      # within IK tolerance: land exactly on the taught configuration
-    traj = Trajectory(t, q, qd)
+    traj = Trajectory(t, q, qd, qdd=qdd / (scale * scale))
     if mismatch > _END_TOL:
         # Tiny joint-space correction so playback lands exactly on the taught configuration.
         T_fix = max(t_min, float(np.max(MIN_JERK_PEAK_VEL * np.abs(q_end - q[-1]) / v_lim)))
         tf = _times(T_fix, dt)
-        qf, qdf, _ = quintic_eval(quintic_coeffs(q[-1], 0.0, 0.0, q_end, 0.0, 0.0, T_fix), tf)
-        traj = Trajectory.concatenate([traj, Trajectory(tf, qf, qdf)])
+        qf, qdf, qddf = quintic_eval(quintic_coeffs(q[-1], 0.0, 0.0, q_end, 0.0, 0.0, T_fix), tf)
+        traj = Trajectory.concatenate([traj, Trajectory(tf, qf, qdf, qdd=qddf)])
     arrival[-1] = traj.duration
     return LinearBlockResult(traj, arrival, path.length, scale)
 
