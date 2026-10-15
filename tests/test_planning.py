@@ -214,3 +214,25 @@ def test_linear_pure_rotation_has_a_duration(model, limits):
     tr = plan_linear_segment(model, L_POSE, q_rot, vmax, amax, 0.15, 0.3, 0.8, 2.0, 0.01)
     assert tr.duration > 0.5 and np.max(np.abs(tr.q[-1] - q_rot)) < 1e-3
     assert np.max(np.abs(tr.qd[:, 5])) <= 0.8 * 1.05
+
+
+def test_linear_segment_time_law_is_minimum_jerk(model, limits):
+    """An unblended linear move follows the rest-to-rest quintic in path length, so its acceleration is continuous."""
+    vmax, amax = limits
+    qb = _shifted(model, L_POSE, [0.0, 0.0, -0.10])       # 10 cm straight down, like a pick descent
+    for speed in (1.0, 0.3):
+        tr = plan_linear_segment(model, L_POSE, qb, vmax, amax, 0.15, 0.3, 0.8, 2.0, 0.01, speed=speed)
+        pos = np.array([model.fk(q).translation for q in tr.q])
+        L = float(np.linalg.norm(pos[-1] - pos[0]))
+        s = np.linalg.norm(pos - pos[0], axis=1)
+        tau = tr.t / tr.duration
+        assert np.max(np.abs(s - L * (10 * tau**3 - 15 * tau**4 + 6 * tau**5))) < 1e-4
+        # The duration comes from the Cartesian limits: the quintic's peak speed is 1.875 L/T and its
+        # peak acceleration 10/sqrt(3) L/T^2, whichever asks for more time.
+        T_v = 1.875 * L / (0.15 * speed)
+        T_a = np.sqrt(10.0 / np.sqrt(3.0) * L / (0.3 * speed))
+        assert tr.duration == pytest.approx(max(T_v, T_a), rel=1e-3)
+        # No acceleration step: the largest change of joint acceleration between two 10 ms samples is a few
+        # percent of the budget (the constant-acceleration ramps this replaces switched ~25% of it per sample).
+        qdd = np.gradient(tr.qd, tr.t, axis=0)
+        assert np.max(np.abs(np.diff(qdd, axis=0)) / (amax * speed)) < 0.15

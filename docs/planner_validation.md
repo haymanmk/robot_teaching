@@ -74,3 +74,38 @@ second, larger source of apparent acceleration: the old sampling left a speed st
 end velocity turned into a spike of tens of rad/s². The cleaner long-term option remains to
 compute the joint velocity analytically from the Cartesian velocity through the Jacobian
 instead of differencing the IK output.
+
+## Time law of linear moves (2026-10-15)
+
+**Why.** The 6 October rebuild timed every linear block with forward and backward passes at the
+constant Cartesian acceleration limit, a trapezoidal speed profile. Its acceleration switches on
+and off within one sample at the four ends of the ramps, the jerk a trapezoid is known for.
+Before that rebuild `sample_straight_line` had used the minimum-jerk quintic, which joint moves
+still use. On the arm the jerk is felt at the start and stop of linear moves.
+
+**Measured on the example.** The new `acc step` column of `tools/validate_plan.py` is the largest
+change of the joint acceleration between two consecutive 10 ms samples, relative to the segment's
+acceleration budget. Joint moves are unchanged; what remains on them is the numerical boundary with
+the hold pieces.
+
+| move | motion | acc step before | acc step after | T before [s] | T after [s] |
+|---|---|---|---|---|---|
+| above pick | joint | 0.074 | 0.044 | 2.48 | 2.48 |
+| pick | linear | 0.275 | 0.016 | 1.97 | 2.75 |
+| lift | linear | 0.254 | 0.021 | 2.50 | 2.96 |
+| place | linear | 0.255 | 0.016 | 1.97 | 2.75 |
+| retreat | linear | 0.254 | 0.021 | 2.50 | 2.96 |
+
+On the pick descent the Cartesian acceleration used to reach its full budget (0.09 m/s² at speed
+0.3) in two samples; it now rises linearly from zero, 0.003 m/s² per sample.
+
+**Fix applied.** A linear block with a single waypoint, which is every linear move that is not
+blended through a pass-through point, uses the rest-to-rest quintic in path length again. Its
+duration comes from the Cartesian linear and angular velocity and acceleration limits
+(`min_jerk_duration`, the same rule as joint moves). Blended blocks keep the velocity-limit curve
+with constant-acceleration ramps, because a corner needs a mid-path speed dip that one quintic
+cannot produce; a jerk-limited ramp there is the next step. The quintic is slower than the
+trapezoid under the same limits (it never cruises at the speed limit): the example's linear moves
+take 0.5-0.8 s longer each and the program 19.6 s instead of 17.1 s. All checks pass, and the IK
+staircase on linear moves drops from 13 to 3 µrad because the move leaves rest more gently.
+`tests/test_planning.py::test_linear_segment_time_law_is_minimum_jerk` pins the time law.

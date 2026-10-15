@@ -8,11 +8,16 @@ position and velocity are continuous and the corner is cut, as in an
 industrial blend zone. Orientation follows the SO(3) geodesic between the
 taught orientations along the path parameter.
 
-Timing comes from a velocity-limit curve along the path: the Cartesian speed
-limit, the angular speed limit on each segment, and the centripetal
-acceleration the blends allow, with zero speed at both ends. A forward and a
-backward pass at the Cartesian acceleration limit give the fastest profile
-under that curve, so the arm slows down only where a corner needs it. The
+Timing. A block with one waypoint is a single straight segment with nothing
+to slow down for, so it gets the rest-to-rest quintic (minimum-jerk) time law
+in path length, as long as the Cartesian velocity and acceleration limits
+need: its acceleration is continuous, like a joint move's. A blended block
+runs under a velocity-limit curve along the path: the Cartesian speed limit,
+the angular speed limit on each segment, and the centripetal acceleration the
+blends allow, with zero speed at both ends. A forward and a backward pass at
+the Cartesian acceleration limit give the fastest profile under that curve,
+so the arm slows down only where a corner needs it; the acceleration switches
+in steps at the ends of those ramps (a jerk-limited ramp is future work). The
 samples are tracked in joint space with the upstream closed-loop IK, checked
 against the hard joint limits (the safety margin is a property of taught
 points) and against the joint velocity and acceleration limits, and
@@ -37,7 +42,7 @@ from reBotArm_control_py.trajectory import (
 )
 
 from ..model import RobotModel
-from .profiles import MIN_JERK_PEAK_ACC, MIN_JERK_PEAK_VEL, quintic_coeffs, quintic_eval
+from .profiles import MIN_JERK_PEAK_VEL, min_jerk_duration, quintic_coeffs, quintic_eval
 from .trajectory import PlanningError, Trajectory
 
 _CLIK = ClikParams(max_iter=100, tolerance=1e-6, damping=1e-6, step_size=0.8)   # tight: 1e-4 leaves steps that look like accelerations
@@ -183,7 +188,9 @@ def plan_linear_block(
 
     Every waypoint but the last is passed through with a corner blend of at
     most ``blend_radius``; ``blend_radius=0`` gives sharp corners, which are
-    only sensible for a single waypoint.
+    only sensible for a single waypoint. A single waypoint gets the
+    minimum-jerk time law, a blended block the velocity-limit curve (see the
+    module docstring).
     """
     q_start = np.asarray(q_start, dtype=float)[: model.n]
     Q = [np.asarray(q, dtype=float)[: model.n] for q in waypoints]
@@ -207,20 +214,26 @@ def plan_linear_block(
         traj = Trajectory(t, qf, qdf)
         return LinearBlockResult(traj, [traj.duration] * m, 0.0, 1.0)
 
-    # Timing: velocity-limit curve (linear, angular, centripetal) with bounded acceleration.
-    t_grid, s_grid = path.time_profile(v_lin * speed, a_lin * speed, v_ang * speed, theta)
-    duration = max(t_min, float(t_grid[-1]))
-    if duration > t_grid[-1] + 1e-12:
-        t_grid = t_grid * (duration / max(t_grid[-1], 1e-12))
+    if m == 1:
+        # One straight segment, nothing to slow down for: rest-to-rest quintic in path length, as long
+        # as the linear and angular limits need. Minimum jerk, acceleration continuous (like a joint move).
+        d_lin = float(np.linalg.norm(P[1] - P[0]))
+        duration = min_jerk_duration([d_lin, theta[0]], [v_lin * speed, v_ang * speed],
+                                     [a_lin * speed, a_ang * speed], t_min)
+        t = _times(duration, dt)
+        s_of_t = quintic_eval(quintic_coeffs(0.0, 0.0, 0.0, path.length, 0.0, 0.0, duration), t)[0][:, 0]
+    else:
+        # Blended block: velocity-limit curve (linear, angular, centripetal) with bounded acceleration.
+        t_grid, _ = path.time_profile(v_lin * speed, a_lin * speed, v_ang * speed, theta)
+        duration = max(t_min, float(t_grid[-1]))
+        t = _times(duration, dt)
+        s_of_t = path.path_param_at(t * (t_grid[-1] / duration))   # t_min only stretches a sub-50 ms move
 
     def orientation(s: float) -> np.ndarray:
         i = int(np.clip(np.searchsorted(path.corner, s, side="right") - 1, 0, m - 1))
         den = path.corner[i + 1] - path.corner[i]
         f = 1.0 if den <= 1e-12 else float(np.clip((s - path.corner[i]) / den, 0.0, 1.0))
         return R[i] @ pin.exp3(w[i] * f)
-
-    t = _times(duration, dt)
-    s_of_t = path.path_param_at(t * (t_grid[-1] / duration))
     cart = CartesianTrajectory()
     for tk, sk in zip(t, s_of_t):
         cart.add_point(float(tk), pin.SE3(orientation(sk), path.position(sk)))
@@ -288,7 +301,7 @@ def plan_linear_segment(
     margin: float = 0.0,
     t_min: float = 0.05,
 ) -> Trajectory:
-    """Single rest-to-rest straight-line move (a one-waypoint block). ``margin`` is kept for call compatibility."""
+    """Single rest-to-rest straight-line move (a one-waypoint block, minimum-jerk time law). ``margin`` is kept for call compatibility."""
     del margin
     return plan_linear_block(model, q_start, [q_end], vmax, amax, v_lin, a_lin, v_ang, a_ang, dt,
                              speed=speed, blend_radius=0.0, t_min=t_min).trajectory
