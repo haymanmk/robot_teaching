@@ -173,9 +173,15 @@
   <!-- ───────────── bottom row: scope (one joint at the control rate) ───────────── -->
   <section class="card scope" id="scope-card">
     <div class="card-head">
-      <h2>Scope <span class="muted">one joint at the control rate, last 5 s</span></h2>
+      <h2>Scope <span class="muted">one joint at the control rate, last <span id="scope-window">5 s</span></span></h2>
       <div class="file-actions">
         <label class="muted">Joint <select id="scope-joint"><option value="">off</option></select></label>
+        <span class="seg scope-zoom" aria-label="zoom">
+          <button id="scope-zoom-out" title="zoom out: a longer window (Ctrl+wheel over a trace also zooms)">−</button>
+          <button id="scope-zoom-in" title="zoom in: a shorter window">+</button>
+        </span>
+        <button class="btn" id="scope-pause" title="freeze the traces: the time axis then shows the controller clock and dragging a trace looks back in time; Resume returns to live. The readout and the recording stay live.">⏸ Pause</button>
+        <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, run)">● Record</button>
         <span class="kv" id="scope-readout"></span>
         <button class="btn" id="scope-reset-max" title="forget the largest tracking error seen so far; it is otherwise kept from the moment the joint was picked, across reconnects and server restarts">Reset max</button>
         <button class="btn" id="btn-reload-gains" title="re-read kp/kd, tau_scale and friction from config/teaching.yaml and the hardware YAML and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
@@ -197,7 +203,7 @@
         <canvas id="scope-tau"></canvas>
       </div>
     </div>
-    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the 5 s on screen; a hole in a trace means samples were missing.</p>
+    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame. <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
   </section>
 </main>
 <script src="/static/app.js"></script>
