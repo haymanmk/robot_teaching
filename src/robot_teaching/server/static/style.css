@@ -121,4 +121,4 @@ input.inline { width: 160px; font-weight: 600; }
 .sw { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 .sw.cmd { background: var(--scope-cmd); }
 .sw.meas { background: var(--scope-meas); }
-#scope-readout { font-variant-numeric: tabular-nums; }
+#scope-readout { font-variant-numeric: tabular-nums; white-space: pre-wrap; }   /* keep the spaces between the items */

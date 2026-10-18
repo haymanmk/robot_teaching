@@ -142,8 +142,13 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
 over the last 5 s: commanded and measured position, their difference, and the torque the
 MIT law asks for next to the torque the motor reports. Pick the joint in its drop-down. It is
 the tool for telling stick-slip (a sawtooth in the error at low speed) from bus trouble
-(gaps on every joint) from low damping (a 3–4 Hz ring on one joint). Programmatically, send
-`{"trace_joint": i}` on the `/ws/state` websocket and read the `trace` chunk of each message.
+(gaps on every joint) from low damping (a 3–4 Hz ring on one joint). The readout keeps the
+largest tracking-error magnitude seen since the joint was picked, over every sample received
+rather than only the 5 s on screen; **Reset max** clears it. A hole in a trace means samples
+were missing. The scope survives a reconnect and a server restart without a page reload: the
+stream restarts from the server's newest samples and the stale part of the window is dropped.
+Programmatically, send `{"trace_joint": i}` on the `/ws/state` websocket and read the `trace`
+chunk of each message.
 
 Point semantics: a point's motion type describes how it is *reached* from the previous
 point (the first point from wherever the arm is). A **blend** point is passed through

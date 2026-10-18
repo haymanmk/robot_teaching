@@ -356,8 +356,12 @@
   // The server appends, to every state message, the samples of the selected joint recorded
   // since the previous message; the client keeps the last SCOPE_WINDOW seconds and draws them.
   const SCOPE_WINDOW = 5.0;                                       // s
+  const SCOPE_GAP = 0.25;                                         // s without samples: lift the pen instead of bridging it
   const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
-  const scope = { joint: null, t: [], q_cmd: [], q: [], tau_cmd: [], tau_meas: [] };
+  // errMax is the largest |measured − commanded| (°) over every sample received since the joint
+  // was picked or "Reset max" was pressed, not only over the samples still in the window; it
+  // survives a reconnect and a server restart.
+  const scope = { joint: null, t: [], q_cmd: [], q: [], tau_cmd: [], tau_meas: [], errMax: null };
   let scopeDrawPending = false;
 
   function buildScope() {
@@ -369,12 +373,14 @@
     try { saved = localStorage.getItem("scopeJoint"); } catch (_) { /* storage blocked */ }
     if (saved !== null && saved !== "" && Number(saved) < config.joint_names.length) sel.value = saved;
     sel.onchange = () => scopeSelect(sel.value === "" ? null : Number(sel.value));
+    $("scope-reset-max").onclick = () => { scope.errMax = null; requestScopeDraw(); };
     scopeSelect(sel.value === "" ? null : Number(sel.value));
     window.addEventListener("resize", requestScopeDraw);
   }
   function scopeSelect(j) {
     scope.joint = j;
     SCOPE_KEYS.forEach((k) => (scope[k] = []));
+    scope.errMax = null;
     try { localStorage.setItem("scopeJoint", j === null ? "" : String(j)); } catch (_) { /* storage blocked */ }
     scopeSendSelection();
     requestScopeDraw();
@@ -384,6 +390,21 @@
   }
   function scopeAppend(chunk) {
     if (!chunk || chunk.joint !== scope.joint || !chunk.t.length) return;
+    // The time axis is the controller clock. On every (re)connection the server restarts the
+    // stream from its newest samples, and a restarted server restarts the clock at zero, so a
+    // chunk may begin at or before the newest sample we hold: it supersedes everything kept
+    // from that time on. (Left in place, those samples would count as "newer" than the window's
+    // end, never be trimmed, and be drawn past the right edge beside the live profile.)
+    const t0 = chunk.t[0];
+    let keep = scope.t.length;
+    while (keep > 0 && scope.t[keep - 1] >= t0) keep--;
+    if (keep < scope.t.length) SCOPE_KEYS.forEach((k) => scope[k].splice(keep));
+    for (let i = 0; i < chunk.t.length; i++) {
+      const qc = chunk.q_cmd[i], qm = chunk.q[i];
+      if (qc === null || qm === null) continue;
+      const e = Math.abs(deg(qm - qc));
+      if (Number.isFinite(e) && (scope.errMax === null || e > scope.errMax)) scope.errMax = e;
+    }
     SCOPE_KEYS.forEach((k) => { for (const v of chunk[k]) scope[k].push(v); });
     const tEnd = scope.t[scope.t.length - 1];
     let cut = 0;
@@ -439,6 +460,9 @@
       if (s > 0) ctx.fillText(`−${s} s`, x, y1 + 3);
     }
     ctx.globalAlpha = 1;
+    // Nothing a series does may leave the plot area (the axes and labels live outside it).
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
     ctx.lineWidth = 1.5; ctx.lineJoin = "round";
     for (const s of series) {
       ctx.strokeStyle = s.color; ctx.beginPath();
@@ -446,11 +470,13 @@
       for (let i = 0; i < scope.t.length; i++) {
         const v = s.values[i];
         if (v === null || !Number.isFinite(v)) { pen = false; continue; }
+        if (pen && scope.t[i] - scope.t[i - 1] > SCOPE_GAP) pen = false;       // missing samples: show the hole
         const x = X(scope.t[i]), y = Y(v);
         if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
       }
       ctx.stroke();
     }
+    ctx.restore();
   }
   function drawScope() {
     const css = getComputedStyle($("scope-card"));
@@ -466,7 +492,7 @@
     const ro = $("scope-readout");
     if (!n) { ro.textContent = scope.joint === null ? "" : "waiting for samples…"; return; }
     const last = n - 1, tm = scope.tau_meas[last];
-    ro.textContent = `error ${fmt(err[last], 3)}°   torque ${fmt(scope.tau_cmd[last], 2)} N·m` + (tm === null ? "" : ` (motor ${fmt(tm, 2)})`) + `   ${n} samples`;
+    ro.textContent = `error ${fmt(err[last], 3)}°  max |error| ${fmt(scope.errMax, 3)}°   torque ${fmt(scope.tau_cmd[last], 2)} N·m` + (tm === null ? "" : ` (motor ${fmt(tm, 2)})`) + `   ${n} samples`;
   }
 
   // ── websocket ──────────────────────────────────────────────────────────

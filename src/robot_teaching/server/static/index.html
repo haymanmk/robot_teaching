@@ -177,6 +177,7 @@
       <div class="file-actions">
         <label class="muted">Joint <select id="scope-joint"><option value="">off</option></select></label>
         <span class="kv" id="scope-readout"></span>
+        <button class="btn" id="scope-reset-max" title="forget the largest tracking error seen so far; it is otherwise kept from the moment the joint was picked, across reconnects and server restarts">Reset max</button>
         <button class="btn" id="btn-reload-gains" title="re-read kp/kd, tau_scale and friction from config/teaching.yaml and the hardware YAML and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
       </div>
     </div>
@@ -196,7 +197,7 @@
         <canvas id="scope-tau"></canvas>
       </div>
     </div>
-    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame.</p>
+    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the 5 s on screen; a hole in a trace means samples were missing.</p>
   </section>
 </main>
 <script src="/static/app.js"></script>
