@@ -354,10 +354,20 @@
 
   // ── scope: one joint at the control rate ───────────────────────────────
   // The server appends, to every state message, the samples of the selected joint recorded
-  // since the previous message; the client keeps the last SCOPE_WINDOW seconds and draws them.
-  const SCOPE_WINDOW = 5.0;                                       // s
+  // since the previous message. The client keeps the last SCOPE_KEEP seconds of them (as long
+  // as the server's own history) and draws the last scope.window seconds, or, while paused, a
+  // frozen copy that can be dragged back in time.
+  const SCOPE_KEEP = 60.0;                                        // s of samples kept on the client
+  const SCOPE_WINDOWS = [0.5, 1, 2, 5, 10, 20, 60];               // s, the zoom steps
+  const SCOPE_GAP = 0.25;                                         // s without samples: lift the pen instead of bridging it
   const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
-  const scope = { joint: null, t: [], q_cmd: [], q: [], tau_cmd: [], tau_meas: [] };
+  const PLOT_LEFT = 52, PLOT_RIGHT = 8;                           // px, the value labels / the right margin
+  // errMax is the largest |measured − commanded| (°) over every sample received since the joint
+  // was picked or "Reset max" was pressed, not only over the samples on screen; it survives a
+  // reconnect and a server restart. epoch identifies the server run the samples came from.
+  const scope = { joint: null, window: 5.0, epoch: null, errMax: null, shown: 0, t: [], q_cmd: [], q: [], tau_cmd: [], tau_meas: [] };
+  const view = { snap: null, end: 0 };                            // paused: the frozen samples and the time at the right edge
+  const rec = { on: false, rows: [], t: [], epoch: null, run: 1, started: 0, name: "", limit: 0 };   // recording: CSV rows plus each row's t
   let scopeDrawPending = false;
 
   function buildScope() {
@@ -365,16 +375,27 @@
     config.joint_names.forEach((name, i) => {
       const o = document.createElement("option"); o.value = String(i); o.textContent = `J${i + 1} ${name}`; sel.appendChild(o);
     });
-    let saved = null;
-    try { saved = localStorage.getItem("scopeJoint"); } catch (_) { /* storage blocked */ }
+    let saved = null, savedWindow = NaN;
+    try { saved = localStorage.getItem("scopeJoint"); savedWindow = Number(localStorage.getItem("scopeWindow")); } catch (_) { /* storage blocked */ }
     if (saved !== null && saved !== "" && Number(saved) < config.joint_names.length) sel.value = saved;
+    if (SCOPE_WINDOWS.includes(savedWindow)) scope.window = savedWindow;
     sel.onchange = () => scopeSelect(sel.value === "" ? null : Number(sel.value));
+    $("scope-zoom-in").onclick = () => scopeZoom(-1);
+    $("scope-zoom-out").onclick = () => scopeZoom(+1);
+    $("scope-pause").onclick = () => scopePause(!view.snap);
+    $("scope-record").onclick = () => (rec.on ? scopeRecordStop() : scopeRecordStart());
+    $("scope-reset-max").onclick = () => { scope.errMax = null; requestScopeDraw(); };
+    ["scope-pos", "scope-err", "scope-tau"].forEach((id) => scopeWireCanvas($(id)));
+    window.addEventListener("beforeunload", (ev) => { if (rec.on) { ev.preventDefault(); ev.returnValue = ""; } });
+    scopeZoom(0);
     scopeSelect(sel.value === "" ? null : Number(sel.value));
     window.addEventListener("resize", requestScopeDraw);
   }
   function scopeSelect(j) {
     scope.joint = j;
     SCOPE_KEYS.forEach((k) => (scope[k] = []));
+    scope.errMax = null;
+    if (view.snap) scopePause(false);                             // the frozen copy belongs to the previous joint
     try { localStorage.setItem("scopeJoint", j === null ? "" : String(j)); } catch (_) { /* storage blocked */ }
     scopeSendSelection();
     requestScopeDraw();
@@ -382,49 +403,162 @@
   function scopeSendSelection() {
     if (wsRef && wsRef.readyState === WebSocket.OPEN) wsRef.send(JSON.stringify({ trace_joint: scope.joint }));
   }
+  function scopeZoom(dir) {
+    const i = Math.min(SCOPE_WINDOWS.length - 1, Math.max(0, SCOPE_WINDOWS.indexOf(scope.window) + dir));
+    scope.window = SCOPE_WINDOWS[i];
+    try { localStorage.setItem("scopeWindow", String(scope.window)); } catch (_) { /* storage blocked */ }
+    $("scope-zoom-in").disabled = i === 0;
+    $("scope-zoom-out").disabled = i === SCOPE_WINDOWS.length - 1;
+    requestScopeDraw();
+  }
+  function scopePause(on) {
+    if (on && !view.snap) {
+      view.snap = {}; SCOPE_KEYS.forEach((k) => (view.snap[k] = scope[k].slice()));
+      view.end = scope.t.length ? scope.t[scope.t.length - 1] : 0;
+    } else if (!on) {
+      view.snap = null;
+    }
+    $("scope-pause").textContent = view.snap ? "▶ Resume" : "⏸ Pause";
+    $("scope-pause").classList.toggle("on", !!view.snap);
+    $("scope-card").classList.toggle("paused", !!view.snap);
+    requestScopeDraw();
+  }
+  function scopeWireCanvas(canvas) {
+    // Paused: drag to look back in time. Any time: Ctrl/⌘ + wheel zooms (a plain wheel scrolls the page).
+    let drag = null;
+    canvas.addEventListener("pointerdown", (ev) => {
+      if (!view.snap || !view.snap.t.length) return;
+      drag = { x: ev.clientX, end: view.end, px: Math.max(1, canvas.clientWidth - PLOT_LEFT - PLOT_RIGHT) };
+      canvas.setPointerCapture(ev.pointerId);
+    });
+    canvas.addEventListener("pointermove", (ev) => {
+      if (!drag || !view.snap) return;
+      const t = view.snap.t;
+      view.end = Math.min(t[t.length - 1], Math.max(t[0], drag.end - (ev.clientX - drag.x) / drag.px * scope.window));
+      requestScopeDraw();
+    });
+    const release = () => { drag = null; };
+    canvas.addEventListener("pointerup", release);
+    canvas.addEventListener("pointercancel", release);
+    canvas.addEventListener("wheel", (ev) => {
+      if (!(ev.ctrlKey || ev.metaKey)) return;
+      ev.preventDefault();
+      scopeZoom(ev.deltaY > 0 ? +1 : -1);
+    }, { passive: false });
+  }
   function scopeAppend(chunk) {
     if (!chunk || chunk.joint !== scope.joint || !chunk.t.length) return;
+    const t0 = chunk.t[0], epoch = chunk.epoch === undefined ? null : chunk.epoch;
+    if (scope.epoch !== null && epoch !== scope.epoch) {
+      // A restarted server: its clock starts again from zero, so nothing kept compares with the
+      // new samples. (Left in place they would count as newer than the window's end, never be
+      // trimmed, and be drawn past the right edge beside the live profile.) A recording keeps
+      // its rows; the run column marks the restart.
+      SCOPE_KEYS.forEach((k) => (scope[k] = []));
+      if (rec.on) rec.run++;
+    } else {
+      // On every (re)connection the server restarts the stream from its newest samples, so a
+      // chunk may begin at or before the newest sample we hold: the re-sent rows replace what
+      // we kept, on screen and in the recording.
+      let keep = scope.t.length;
+      while (keep > 0 && scope.t[keep - 1] >= t0) keep--;
+      if (keep < scope.t.length) SCOPE_KEYS.forEach((k) => scope[k].splice(keep));
+      if (rec.on && rec.epoch === epoch) {
+        let n = rec.t.length;
+        while (n > 0 && rec.t[n - 1] >= t0) n--;
+        rec.rows.length = rec.t.length = n;
+      }
+    }
+    scope.epoch = epoch;
+    for (let i = 0; i < chunk.t.length; i++) {
+      const qc = chunk.q_cmd[i], qm = chunk.q[i];
+      if (qc !== null && qm !== null) {
+        const e = Math.abs(deg(qm - qc));
+        if (Number.isFinite(e) && (scope.errMax === null || e > scope.errMax)) scope.errMax = e;
+      }
+      if (rec.on) scopeRecordRow(chunk, i, epoch);
+    }
     SCOPE_KEYS.forEach((k) => { for (const v of chunk[k]) scope[k].push(v); });
     const tEnd = scope.t[scope.t.length - 1];
     let cut = 0;
-    while (cut < scope.t.length && scope.t[cut] < tEnd - SCOPE_WINDOW) cut++;
+    while (cut < scope.t.length && scope.t[cut] < tEnd - SCOPE_KEEP) cut++;
     if (cut) SCOPE_KEYS.forEach((k) => scope[k].splice(0, cut));
+    if (view.snap) drawReadout(); else requestScopeDraw();        // paused: the traces stay, the readout is live
+  }
+
+  // Recording: every sample of the selected joint, as received, into CSV rows; Stop downloads them.
+  const num = (v, d) => (v === null || v === undefined ? "" : Number(v).toFixed(d));
+  const stamp = (ms) => { const d = new Date(ms), p = (x) => String(x).padStart(2, "0"); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
+  function scopeRecordStart() {
+    if (scope.joint === null) { toast("pick a joint to record", true); return; }
+    rec.on = true; rec.rows = []; rec.t = []; rec.epoch = scope.epoch; rec.run = 1; rec.started = Date.now();
+    rec.name = `scope_J${scope.joint + 1}_${stamp(rec.started)}.csv`;
+    rec.limit = Math.round(3600 * (config.control_rate || 500));    // an hour at the control rate
+    $("scope-record").classList.add("on");
     requestScopeDraw();
   }
+  function scopeRecordRow(chunk, i, epoch) {
+    const qc = chunk.q_cmd[i], qm = chunk.q[i];
+    rec.rows.push(`${num(chunk.t[i], 4)},J${chunk.joint + 1},${num(qc, 6)},${num(qm, 6)},${qc === null || qm === null ? "" : (qm - qc).toFixed(6)},${num(chunk.tau_cmd[i], 4)},${num(chunk.tau_meas[i], 4)},${rec.run}`);
+    rec.t.push(chunk.t[i]); rec.epoch = epoch;
+    if (rec.rows.length >= rec.limit) { scopeRecordStop(); toast(`recording stopped after ${rec.limit} rows and saved`, true); }
+  }
+  function scopeRecordStop() {
+    if (!rec.on) return;
+    rec.on = false;
+    const n = rec.rows.length, name = rec.name;
+    const csv = "t_s,joint,q_cmd_rad,q_rad,err_rad,tau_cmd_Nm,tau_meas_Nm,run\n" + rec.rows.join("\n") + "\n";
+    rec.rows = []; rec.t = [];
+    $("scope-record").classList.remove("on");
+    requestScopeDraw();
+    if (!n) { toast("nothing recorded"); return; }
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast(`saved ${name}: ${n} rows`);
+  }
+
   function requestScopeDraw() {
     if (scopeDrawPending) return;
     scopeDrawPending = true;
     requestAnimationFrame(() => { scopeDrawPending = false; drawScope(); });
   }
+  function niceStep(span, want) {
+    const raw = span / want, p = Math.pow(10, Math.floor(Math.log10(raw)));
+    return [1, 2, 5, 10].map((m) => m * p).find((s) => span / s <= want) || 10 * p;
+  }
   function niceTicks(lo, hi, want) {
     const span = hi - lo;
     if (!(span > 0)) return [lo];
-    const raw = span / want, p = Math.pow(10, Math.floor(Math.log10(raw)));
-    const step = [1, 2, 5, 10].map((m) => m * p).find((s) => span / s <= want) || 10 * p;
-    const out = [];
+    const step = niceStep(span, want), out = [];
     for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-12; v += step) out.push(Math.abs(v) < step * 1e-6 ? 0 : v);
     return out;
   }
   const fmtTick = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(2));
-  function drawStrip(canvas, tEnd, series, opts) {
+  const lowerBound = (a, x) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m; } return lo; };
+  const upperBound = (a, x) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= x) lo = m + 1; else hi = m; } return lo; };
+  // axis: { tEnd, W, t, absolute } — the time at the right edge, the window, the times of the
+  // samples on screen (series[].values run parallel to t) and whether to label the controller clock.
+  function drawStrip(canvas, axis, series, opts) {
     const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth, H = canvas.clientHeight;
-    if (!W || !H) return;
-    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
+    const Wpx = canvas.clientWidth, H = canvas.clientHeight;
+    if (!Wpx || !H) return;
+    if (canvas.width !== Math.round(Wpx * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(Wpx * dpr); canvas.height = Math.round(H * dpr); }
     const ctx = canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
+    ctx.clearRect(0, 0, Wpx, H);
     const css = getComputedStyle(document.documentElement);
     const lineColor = css.getPropertyValue("--line").trim() || "#262b36", muted = css.getPropertyValue("--muted").trim() || "#8b93a7";
-    const x0 = 52, x1 = W - 8, y0 = 6, y1 = H - 16;
+    const { tEnd, W, t } = axis, m = t.length;
+    const x0 = PLOT_LEFT, x1 = Wpx - PLOT_RIGHT, y0 = 6, y1 = H - 16;
     let lo = Infinity, hi = -Infinity;
     for (const s of series) for (const v of s.values) if (v !== null && Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
     if (!Number.isFinite(lo)) { lo = -1; hi = 1; }
     const minSpan = opts.minSpan || 1e-6;
-    if (opts.symmetric) { const m = Math.max(Math.abs(lo), Math.abs(hi), minSpan / 2); lo = -m; hi = m; }
+    if (opts.symmetric) { const mx = Math.max(Math.abs(lo), Math.abs(hi), minSpan / 2); lo = -mx; hi = mx; }
     if (hi - lo < minSpan) { const c = (hi + lo) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
     const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
-    const X = (t) => x1 - (x1 - x0) * (tEnd - t) / SCOPE_WINDOW;
+    const X = (tt) => x1 - (x1 - x0) * (tEnd - tt) / W;
     const Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
     ctx.lineWidth = 1; ctx.strokeStyle = lineColor; ctx.fillStyle = muted; ctx.font = "11px system-ui, sans-serif";
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
@@ -433,40 +567,81 @@
       ctx.globalAlpha = v === 0 ? 1 : 0.6; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.globalAlpha = 1;
       ctx.fillText(fmtTick(v), x0 - 5, y);
     }
+    // Time grid: live, seconds before the right edge; paused, the controller clock (the t of a recording).
+    const step = niceStep(W, 6);
     ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.globalAlpha = 0.6;
-    for (let s = 0; s <= SCOPE_WINDOW; s += 1) {
-      const x = X(tEnd - s); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
-      if (s > 0) ctx.fillText(`−${s} s`, x, y1 + 3);
+    const vline = (x) => { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); };
+    if (axis.absolute) {
+      const dec = Math.max(0, -Math.floor(Math.log10(step)));
+      for (const v of niceTicks(tEnd - W, tEnd, 6)) { const x = X(v); vline(x); if (x < x1 - 24) ctx.fillText(`${v.toFixed(dec)} s`, x, y1 + 3); }
+    } else {
+      for (let k = 0; k * step <= W + 1e-9; k++) { const sBack = k * step, x = X(tEnd - sBack); vline(x); if (k > 0) ctx.fillText(`−${+sBack.toFixed(3)} s`, x, y1 + 3); }
     }
     ctx.globalAlpha = 1;
+    // Nothing a series does may leave the plot area (the axes and labels live outside it).
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
     ctx.lineWidth = 1.5; ctx.lineJoin = "round";
+    const colOf = (tt) => Math.floor(X(tt) - x0);
     for (const s of series) {
       ctx.strokeStyle = s.color; ctx.beginPath();
       let pen = false;
-      for (let i = 0; i < scope.t.length; i++) {
-        const v = s.values[i];
-        if (v === null || !Number.isFinite(v)) { pen = false; continue; }
-        const x = X(scope.t[i]), y = Y(v);
-        if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+      if (m <= 2 * (x1 - x0)) {
+        for (let i = 0; i < m; i++) {
+          const v = s.values[i];
+          if (v === null || !Number.isFinite(v)) { pen = false; continue; }
+          if (pen && t[i] - t[i - 1] > SCOPE_GAP) pen = false;             // missing samples: show the hole
+          const x = X(t[i]), y = Y(v);
+          if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+        }
+      } else {
+        // More samples than pixels: one min–max bar per pixel column keeps every spike visible.
+        let col = null, clo = 0, chi = 0;
+        for (let i = 0; i <= m; i++) {
+          const v = i < m ? s.values[i] : null, c = i < m ? colOf(t[i]) : null;
+          const gap = i > 0 && i < m && t[i] - t[i - 1] > SCOPE_GAP;
+          if (col !== null && (c !== col || v === null || gap)) {
+            const x = x0 + col + 0.5;
+            if (pen) ctx.lineTo(x, Y(chi)); else ctx.moveTo(x, Y(chi));
+            ctx.lineTo(x, Y(clo)); pen = true; col = null;
+          }
+          if (v === null || !Number.isFinite(v)) { pen = false; continue; }
+          if (gap) pen = false;
+          if (col === null) { col = c; clo = chi = v; } else { if (v < clo) clo = v; if (v > chi) chi = v; }
+        }
       }
       ctx.stroke();
     }
+    ctx.restore();
   }
   function drawScope() {
     const css = getComputedStyle($("scope-card"));
     const blue = css.getPropertyValue("--scope-cmd").trim() || "#3b82f6", amber = css.getPropertyValue("--scope-meas").trim() || "#d95926", accent = css.getPropertyValue("--scope-err").trim() || "#6ea8fe";
-    const n = scope.t.length;
-    const tEnd = n ? scope.t[n - 1] : 0;
-    const qCmd = scope.q_cmd.map((v) => (v === null ? null : deg(v)));
-    const q = scope.q.map((v) => (v === null ? null : deg(v)));
-    const err = scope.q.map((v, i) => (v === null || scope.q_cmd[i] === null ? null : deg(v - scope.q_cmd[i])));
-    drawStrip($("scope-pos"), tEnd, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
-    drawStrip($("scope-err"), tEnd, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
-    drawStrip($("scope-tau"), tEnd, [{ values: scope.tau_cmd, color: blue }, { values: scope.tau_meas, color: amber }], { symmetric: true, minSpan: 0.5 });
-    const ro = $("scope-readout");
+    const src = view.snap || scope, W = scope.window, n = src.t.length;
+    const tEnd = view.snap ? view.end : (n ? src.t[n - 1] : 0);
+    // On screen: from one sample before the left edge to the last one at or before the right edge.
+    const i1 = view.snap ? upperBound(src.t, tEnd) : n;
+    const i0 = Math.max(0, lowerBound(src.t, tEnd - W) - 1);
+    const t = src.t.slice(i0, i1);
+    const qCmd = src.q_cmd.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
+    const q = src.q.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
+    const err = q.map((v, i) => (v === null || qCmd[i] === null ? null : v - qCmd[i]));
+    const axis = { tEnd, W, t, absolute: !!view.snap };
+    drawStrip($("scope-pos"), axis, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
+    drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
+    drawStrip($("scope-tau"), axis, [{ values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
+    scope.shown = t.length;
+    drawReadout();
+  }
+  function drawReadout() {
+    const W = scope.window;
+    $("scope-window").textContent = (W < 1 ? `${W * 1000} ms` : `${W} s`) + (view.snap ? " (paused)" : "");
+    $("scope-record").textContent = rec.on ? `■ Stop ${Math.round((Date.now() - rec.started) / 1000)} s` : "● Record";
+    const ro = $("scope-readout"), n = scope.t.length;
     if (!n) { ro.textContent = scope.joint === null ? "" : "waiting for samples…"; return; }
-    const last = n - 1, tm = scope.tau_meas[last];
-    ro.textContent = `error ${fmt(err[last], 3)}°   torque ${fmt(scope.tau_cmd[last], 2)} N·m` + (tm === null ? "" : ` (motor ${fmt(tm, 2)})`) + `   ${n} samples`;
+    const last = n - 1, tm = scope.tau_meas[last], qc = scope.q_cmd[last], qm = scope.q[last];
+    const e = qc === null || qm === null ? null : deg(qm - qc);
+    ro.textContent = `error ${fmt(e, 3)}°  max |error| ${fmt(scope.errMax, 3)}°   torque ${fmt(scope.tau_cmd[last], 2)} N·m` + (tm === null ? "" : ` (motor ${fmt(tm, 2)})`) + `   ${scope.shown} samples on screen`;
   }
 
   // ── websocket ──────────────────────────────────────────────────────────

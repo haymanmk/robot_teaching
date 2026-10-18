@@ -299,6 +299,7 @@ def test_trace_buffer_wraps_and_continues():
         buf.append(0.01 * k, q_cmd=[k, -k], q=[k + 0.5, 0.0], tau_cmd=[1.0, 2.0], tau_meas=np.nan)
     chunk = buf.since(None, 1)
     assert chunk["seq"] == 20 and len(chunk["t"]) == 8, "only the newest rows survive a wrap"
+    assert chunk["epoch"] == buf.epoch > 0, "the chunk names the run its samples come from"
     assert chunk["q_cmd"] == [-k for k in range(12, 20)] and chunk["t"] == pytest.approx([0.01 * k for k in range(12, 20)])
     assert chunk["tau_meas"] == [None] * 8, "NaN becomes null for JSON"
     assert buf.since(15, 1)["q_cmd"] == [-15, -16, -17, -18, -19]

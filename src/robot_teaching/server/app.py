@@ -348,7 +348,8 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
 
         A client may send ``{"trace_joint": i}`` (``null`` to stop) to receive, in every following
         message, a ``trace`` chunk with the scope samples of joint ``i`` recorded at the control
-        rate since the previous message (the first chunk carries the latest ~2 s).
+        rate since the previous message (the first chunk carries the latest ~2 s). The chunk's
+        ``epoch`` identifies the server run: a new value means the clock ``t`` restarted at zero.
         """
         await ws.accept()
         period = 1.0 / max(1.0, cfg.control.state_stream_rate)

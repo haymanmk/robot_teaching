@@ -61,7 +61,10 @@ class Mode(str, Enum):
 class TraceBuffer:
     """Ring buffer of one row per control tick for the scope: the controller clock, the
     commanded and measured joint positions, the torque the MIT law asks for (evaluated on the
-    host from the gains, the errors and the feed-forward) and the torque the motors report."""
+    host from the gains, the errors and the feed-forward) and the torque the motors report.
+
+    ``epoch`` (wall-clock time of creation) identifies the run: a client that sees a new value
+    knows the server restarted and the clock ``t`` started again from zero."""
 
     FIELDS = ("q_cmd", "q", "tau_cmd", "tau_meas")
 
@@ -71,6 +74,7 @@ class TraceBuffer:
         self.t = np.zeros(self.size)
         self.data = {f: np.full((self.size, self.n), np.nan) for f in self.FIELDS}
         self.seq = 0                       # rows appended so far; row k lives at k % size
+        self.epoch = time.time()
 
     def append(self, t: float, **fields) -> None:
         i = self.seq % self.size
@@ -87,7 +91,7 @@ class TraceBuffer:
         end = self.seq
         start = max(0, end - self.size, end - int(max_samples), 0 if seq is None else int(seq))
         idx = np.arange(start, end) % self.size
-        out: dict = {"joint": int(joint), "seq": int(end), "t": self.t[idx].tolist()}
+        out: dict = {"joint": int(joint), "seq": int(end), "epoch": self.epoch, "t": self.t[idx].tolist()}
         for f in self.FIELDS:
             out[f] = [None if np.isnan(v) else float(v) for v in self.data[f][idx, joint]]
         return out

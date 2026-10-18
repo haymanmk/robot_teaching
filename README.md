@@ -138,12 +138,23 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
    ramps the speed to zero and holds. **Space** (outside text fields) or **Esc** (anywhere)
    triggers the same graceful stop while the page has keyboard focus.
 
-**Scope.** The card at the bottom of the pendant shows one joint at the full control rate
-over the last 5 s: commanded and measured position, their difference, and the torque the
-MIT law asks for next to the torque the motor reports. Pick the joint in its drop-down. It is
-the tool for telling stick-slip (a sawtooth in the error at low speed) from bus trouble
-(gaps on every joint) from low damping (a 3–4 Hz ring on one joint). Programmatically, send
-`{"trace_joint": i}` on the `/ws/state` websocket and read the `trace` chunk of each message.
+**Scope.** The card at the bottom of the pendant shows one joint at the full control rate:
+commanded and measured position, their difference, and the torque the MIT law asks for next
+to the torque the motor reports. Pick the joint in its drop-down. It is the tool for telling
+stick-slip (a sawtooth in the error at low speed) from bus trouble (gaps on every joint) from
+low damping (a 3–4 Hz ring on one joint). **−** / **+** (or Ctrl+wheel over a trace) zoom the
+window between 0.5 s and 60 s, the length of the history the server keeps. **Pause** freezes
+the traces: the time axis then shows the controller clock and dragging a trace looks back in
+time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
+the selected joint to a CSV file that downloads on **Stop**, with the columns `t_s`, `joint`,
+`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm` and `run` (`run` increments when
+the server restarts, where `t_s` starts again from zero). The readout keeps the largest
+tracking-error magnitude seen since the joint was picked, over every sample received rather
+than only the ones on screen; **Reset max** clears it. A hole in a trace means samples were
+missing. The scope survives a reconnect and a server restart without a page reload.
+Programmatically, send `{"trace_joint": i}` on the `/ws/state` websocket and read the `trace`
+chunk of each message; its `epoch` identifies the server run, so a new value means the clock
+`t` started again from zero.
 
 Point semantics: a point's motion type describes how it is *reached* from the previous
 point (the first point from wherever the arm is). A **blend** point is passed through
