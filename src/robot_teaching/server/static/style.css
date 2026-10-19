@@ -130,3 +130,16 @@ input.inline { width: 160px; font-weight: 600; }
 #scope-record.on { background: #6b1d20; border-color: #a12a2f; }
 .card.scope.paused .strip canvas { cursor: grab; touch-action: none; }
 .card.scope.paused .strip canvas:active { cursor: grabbing; }
+
+/* Offline plotter (plot.html): the scope's strips for a CSV recording. */
+.plot-page { padding: 14px 16px; }
+.plot-page .card.scope { max-width: 1600px; margin: 0 auto; }
+.file-input { display: none; }
+label.btn, a.btn { display: inline-flex; align-items: center; cursor: pointer; text-decoration: none; }
+.drop { border: 1px dashed var(--line); border-radius: 10px; padding: 10px; text-align: center; color: var(--muted); margin-bottom: 10px; font-size: 12px; }
+.drop.over { border-color: var(--accent); color: var(--text); }
+.strip.overview canvas { height: 44px; cursor: crosshair; touch-action: none; }
+.strip canvas.pan { cursor: grab; touch-action: none; }
+.strip canvas.pan:active { cursor: grabbing; }
+#plot-readout { font-variant-numeric: tabular-nums; white-space: pre-wrap; margin-top: 8px; min-height: 1.4em; }
+#plot-summary { font-variant-numeric: tabular-nums; }

@@ -47,6 +47,14 @@ def test_config_and_state(client):
     assert client.get("/").status_code == 200
 
 
+def test_plotter_page_is_served(client):
+    r = client.get("/plot")                       # redirects to the static page, which the client follows
+    assert r.status_code == 200 and 'src="plot.js"' in r.text and 'src="scope.js"' in r.text
+    for name in ("plot.html", "plot.js", "record.js", "scope.js", "dsp.js", "style.css"):
+        r = client.get(f"/static/{name}")
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache", name
+
+
 def test_record_edit_and_play_flow(client):
     # Record a point in hold, jog, record another, then play.
     r = client.post("/api/program/points", json={"motion": "joint", "speed": 0.8}).json()

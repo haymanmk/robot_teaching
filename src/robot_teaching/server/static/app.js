@@ -359,9 +359,8 @@
   // frozen copy that can be dragged back in time.
   const SCOPE_KEEP = 60.0;                                        // s of samples kept on the client
   const SCOPE_WINDOWS = [0.5, 1, 2, 5, 10, 20, 60];               // s, the zoom steps
-  const SCOPE_GAP = 0.25;                                         // s without samples: lift the pen instead of bridging it
+  const SCOPE_GAP = scopeDraw.GAP;                                // s without samples: lift the pen instead of bridging it
   const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
-  const PLOT_LEFT = 52, PLOT_RIGHT = 8;                           // px, the value labels / the right margin
   const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
   const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment (rounded to a power of two of samples)
@@ -446,7 +445,7 @@
     let drag = null;
     canvas.addEventListener("pointerdown", (ev) => {
       if (!view.snap || !view.snap.t.length) return;
-      drag = { x: ev.clientX, end: view.end, px: Math.max(1, canvas.clientWidth - PLOT_LEFT - PLOT_RIGHT) };
+      drag = { x: ev.clientX, end: view.end, px: Math.max(1, canvas.clientWidth - scopeDraw.PLOT_LEFT - scopeDraw.PLOT_RIGHT) };
       canvas.setPointerCapture(ev.pointerId);
     });
     canvas.addEventListener("pointermove", (ev) => {
@@ -541,105 +540,6 @@
     scopeDrawPending = true;
     requestAnimationFrame(() => { scopeDrawPending = false; drawScope(); });
   }
-  function niceStep(span, want) {
-    const raw = span / want, p = Math.pow(10, Math.floor(Math.log10(raw)));
-    return [1, 2, 5, 10].map((m) => m * p).find((s) => span / s <= want) || 10 * p;
-  }
-  function niceTicks(lo, hi, want) {
-    const span = hi - lo;
-    if (!(span > 0)) return [lo];
-    const step = niceStep(span, want), out = [];
-    for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-12; v += step) out.push(Math.abs(v) < step * 1e-6 ? 0 : v);
-    return out;
-  }
-  const fmtTick = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(2));
-  const lowerBound = (a, x) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m; } return lo; };
-  const upperBound = (a, x) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= x) lo = m + 1; else hi = m; } return lo; };
-  // axis: { tEnd, W, t, absolute } — the time at the right edge, the window, the times of the
-  // samples on screen (series[].values run parallel to t) and whether to label the controller clock.
-  // Size the canvas to its CSS box at the device pixel ratio, clear it, and return the drawing
-  // context with the theme colours (null while the canvas has no size, e.g. hidden).
-  function setupCanvas(canvas) {
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth, H = canvas.clientHeight;
-    if (!W || !H) return null;
-    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
-    const ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    const css = getComputedStyle(document.documentElement);
-    ctx.font = "11px system-ui, sans-serif";
-    return { ctx, W, H, lineColor: css.getPropertyValue("--line").trim() || "#262b36", muted: css.getPropertyValue("--muted").trim() || "#8b93a7" };
-  }
-  function drawStrip(canvas, axis, series, opts) {
-    const c = setupCanvas(canvas);
-    if (!c) return;
-    const { ctx, W: Wpx, H, lineColor, muted } = c;
-    const { tEnd, W, t } = axis, m = t.length;
-    const x0 = PLOT_LEFT, x1 = Wpx - PLOT_RIGHT, y0 = 6, y1 = H - 16;
-    let lo = Infinity, hi = -Infinity;
-    for (const s of series) for (const v of s.values) if (v !== null && Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
-    if (!Number.isFinite(lo)) { lo = -1; hi = 1; }
-    const minSpan = opts.minSpan || 1e-6;
-    if (opts.symmetric) { const mx = Math.max(Math.abs(lo), Math.abs(hi), minSpan / 2); lo = -mx; hi = mx; }
-    if (hi - lo < minSpan) { const c = (hi + lo) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
-    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
-    const X = (tt) => x1 - (x1 - x0) * (tEnd - tt) / W;
-    const Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
-    ctx.lineWidth = 1; ctx.strokeStyle = lineColor; ctx.fillStyle = muted;
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    for (const v of niceTicks(lo, hi, 4)) {
-      const y = Y(v);
-      ctx.globalAlpha = v === 0 ? 1 : 0.6; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.globalAlpha = 1;
-      ctx.fillText(fmtTick(v), x0 - 5, y);
-    }
-    // Time grid: live, seconds before the right edge; paused, the controller clock (the t of a recording).
-    const step = niceStep(W, 6);
-    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.globalAlpha = 0.6;
-    const vline = (x) => { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); };
-    if (axis.absolute) {
-      const dec = Math.max(0, -Math.floor(Math.log10(step)));
-      for (const v of niceTicks(tEnd - W, tEnd, 6)) { const x = X(v); vline(x); if (x < x1 - 24) ctx.fillText(`${v.toFixed(dec)} s`, x, y1 + 3); }
-    } else {
-      for (let k = 0; k * step <= W + 1e-9; k++) { const sBack = k * step, x = X(tEnd - sBack); vline(x); if (k > 0) ctx.fillText(`−${+sBack.toFixed(3)} s`, x, y1 + 3); }
-    }
-    ctx.globalAlpha = 1;
-    // Nothing a series does may leave the plot area (the axes and labels live outside it).
-    ctx.save();
-    ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
-    ctx.lineWidth = 1.5; ctx.lineJoin = "round";
-    const colOf = (tt) => Math.floor(X(tt) - x0);
-    for (const s of series) {
-      ctx.strokeStyle = s.color; ctx.beginPath();
-      let pen = false;
-      if (m <= 2 * (x1 - x0)) {
-        for (let i = 0; i < m; i++) {
-          const v = s.values[i];
-          if (v === null || !Number.isFinite(v)) { pen = false; continue; }
-          if (pen && t[i] - t[i - 1] > SCOPE_GAP) pen = false;             // missing samples: show the hole
-          const x = X(t[i]), y = Y(v);
-          if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
-        }
-      } else {
-        // More samples than pixels: one min–max bar per pixel column keeps every spike visible.
-        let col = null, clo = 0, chi = 0;
-        for (let i = 0; i <= m; i++) {
-          const v = i < m ? s.values[i] : null, c = i < m ? colOf(t[i]) : null;
-          const gap = i > 0 && i < m && t[i] - t[i - 1] > SCOPE_GAP;
-          if (col !== null && (c !== col || v === null || gap)) {
-            const x = x0 + col + 0.5;
-            if (pen) ctx.lineTo(x, Y(chi)); else ctx.moveTo(x, Y(chi));
-            ctx.lineTo(x, Y(clo)); pen = true; col = null;
-          }
-          if (v === null || !Number.isFinite(v)) { pen = false; continue; }
-          if (gap) pen = false;
-          if (col === null) { col = c; clo = chi = v; } else { if (v < clo) clo = v; if (v > chi) chi = v; }
-        }
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
   // ── spectrum strip ──
   function fftShow(on) {
     fft.on = on;
@@ -669,63 +569,8 @@
       fft.spec = window.scopeDSP ? scopeDSP.welch(values, t, { segmentSeconds: FFT_SEGMENT, maxSegments: 32, gap: SCOPE_GAP }) : null;
       fft.key = key; fft.at = now;
     }
-    drawSpectrumStrip($("scope-fft"), fft.spec, unit);
-  }
-  function drawSpectrumStrip(canvas, spec, unit) {
-    const c = setupCanvas(canvas);
-    if (!c) return;
-    const { ctx, W: Wpx, H, lineColor, muted } = c;
     const accent = getComputedStyle($("scope-card")).getPropertyValue("--scope-err").trim() || "#6ea8fe";
-    const x0 = PLOT_LEFT, x1 = Wpx - PLOT_RIGHT, y0 = 6, y1 = H - 16;
-    const ro = $("fft-readout");
-    ctx.fillStyle = muted;
-    if (!spec) {
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText(scope.joint === null ? "pick a joint" : "waiting for 64 gap-free samples", (x0 + x1) / 2, (y0 + y1) / 2);
-      ro.textContent = "";
-      return;
-    }
-    const fmax = Math.min(fft.fmax, spec.fs / 2);
-    const nb = Math.min(spec.f.length, Math.floor(fmax / spec.df) + 1);
-    const dB = (a) => 20 * Math.log10(Math.max(a, 1e-6));
-    let lo = Infinity, hi = -Infinity, peak = -1;
-    for (let k = 1; k < nb; k++) {                               // the DC bin is left out: detrended, it only says how well
-      const v = dB(spec.amp[k]);
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-      if (spec.f[k] >= 1 && (peak < 0 || spec.amp[k] > spec.amp[peak])) peak = k;
-    }
-    if (!Number.isFinite(lo)) { lo = -60; hi = 0; }
-    lo = Math.floor((lo - 3) / 10) * 10; hi = Math.ceil((hi + 3) / 10) * 10;
-    if (hi - lo < 30) hi = lo + 30;
-    const X = (f) => x0 + (x1 - x0) * f / fmax, Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
-    ctx.lineWidth = 1; ctx.strokeStyle = lineColor;
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    for (const v of niceTicks(lo, hi, 4)) {
-      const y = Y(v);
-      ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.globalAlpha = 1;
-      ctx.fillText(v.toFixed(0), x0 - 5, y);
-    }
-    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.globalAlpha = 0.6;
-    for (const f of niceTicks(0, fmax, 6)) {
-      const x = X(f); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
-      if (x < x1 - 24) ctx.fillText(`${+f.toFixed(2)} Hz`, x, y1 + 3);
-    }
-    ctx.globalAlpha = 1;
-    ctx.save();
-    ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
-    ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.strokeStyle = accent; ctx.beginPath();
-    for (let k = 1; k < nb; k++) { const x = X(spec.f[k]), y = Y(dB(spec.amp[k])); if (k === 1) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
-    ctx.stroke();
-    if (peak > 0) { ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(X(spec.f[peak]), Y(dB(spec.amp[peak])), 3.5, 0, 2 * Math.PI); ctx.fill(); }
-    ctx.restore();
-    if (peak > 0) {
-      const x = X(spec.f[peak]), y = Math.max(y0 + 12, Y(dB(spec.amp[peak]))), right = x > (x0 + x1) / 2;
-      ctx.fillStyle = muted; ctx.textAlign = right ? "right" : "left"; ctx.textBaseline = "bottom";
-      ctx.fillText(`${spec.f[peak].toFixed(2)} Hz`, x + (right ? -6 : 6), y - 2);
-    }
-    ro.textContent = (peak > 0 ? `peak ${spec.f[peak].toFixed(2)} Hz: ${spec.amp[peak].toPrecision(3)} ${unit} (${dB(spec.amp[peak]).toFixed(1)} dB)   ` : "")
-      + `Δf ${spec.df.toFixed(2)} Hz   ${spec.segments} × ${spec.n} samples at ${spec.fs.toFixed(0)} Hz`;
+    $("fft-readout").textContent = scopeDraw.drawSpectrumStrip($("scope-fft"), fft.spec, { unit, fmax: fft.fmax, accent, empty: scope.joint === null ? "pick a joint" : "waiting for 64 gap-free samples" });
   }
   function drawScope() {
     const css = getComputedStyle($("scope-card"));
@@ -733,16 +578,16 @@
     const src = view.snap || scope, W = scope.window, n = src.t.length;
     const tEnd = view.snap ? view.end : (n ? src.t[n - 1] : 0);
     // On screen: from one sample before the left edge to the last one at or before the right edge.
-    const i1 = view.snap ? upperBound(src.t, tEnd) : n;
-    const i0 = Math.max(0, lowerBound(src.t, tEnd - W) - 1);
+    const i1 = view.snap ? scopeDraw.upperBound(src.t, tEnd) : n;
+    const i0 = Math.max(0, scopeDraw.lowerBound(src.t, tEnd - W) - 1);
     const t = src.t.slice(i0, i1);
     const qCmd = src.q_cmd.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
     const q = src.q.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
     const err = q.map((v, i) => (v === null || qCmd[i] === null ? null : v - qCmd[i]));
     const axis = { tEnd, W, t, absolute: !!view.snap };
-    drawStrip($("scope-pos"), axis, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
-    drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
-    drawStrip($("scope-tau"), axis, [{ values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
+    scopeDraw.drawStrip($("scope-pos"), axis, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
+    scopeDraw.drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
+    scopeDraw.drawStrip($("scope-tau"), axis, [{ values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
     scope.shown = t.length;
     if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err });
     drawReadout();

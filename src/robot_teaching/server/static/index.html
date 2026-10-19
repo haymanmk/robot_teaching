@@ -184,6 +184,7 @@
         <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, run)">● Record</button>
         <button class="btn" id="scope-fft-toggle" title="show the amplitude spectrum of one signal over the samples on screen: Welch's method, Hann-windowed and detrended 2 s segments averaged, segments with missing samples left out; Ctrl+wheel over it zooms the frequency range">Spectrum</button>
         <span class="kv" id="scope-readout"></span>
+        <a class="btn" href="/plot" target="_blank" rel="noopener" title="open a recorded CSV file in the offline plotter (a page that also works from disk, without the server)">Plot…</a>
         <button class="btn" id="scope-reset-max" title="forget the largest tracking error seen so far; it is otherwise kept from the moment the joint was picked, across reconnects and server restarts">Reset max</button>
         <button class="btn" id="btn-reload-gains" title="re-read kp/kd, tau_scale and friction from config/teaching.yaml and the hardware YAML and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
       </div>
@@ -225,6 +226,7 @@
   </section>
 </main>
 <script src="/static/dsp.js"></script>
+<script src="/static/scope.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

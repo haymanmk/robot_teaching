@@ -19,7 +19,7 @@ from typing import Literal
 import numpy as np
 import pinocchio as pin
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -687,6 +687,12 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         @app.get("/", include_in_schema=False)
         def index():
             return FileResponse(STATIC_DIR / "index.html")
+
+        @app.get("/plot", include_in_schema=False)
+        def plot():
+            # The offline plotter for scope recordings; it loads its scripts by relative path so
+            # the same file also works opened from disk.
+            return RedirectResponse("/static/plot.html")
 
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

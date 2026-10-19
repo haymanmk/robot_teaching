@@ -33,7 +33,7 @@ robot_teaching/
 │   ├── planning/                   quintic profiles, joint spline, Cartesian line, program → trajectory
 │   ├── controller.py               500 Hz state machine: HOLD / FREE_DRIVE / PLAYBACK / DISABLED
 │   ├── backend/                    ArmBackend protocol, SimBackend, RebotArmBackend
-│   ├── server/                     FastAPI (REST + WebSocket) and the static teach-pendant UI
+│   ├── server/                     FastAPI (REST + WebSocket), the static teach-pendant UI and the offline plotter
 │   └── cli.py                      `robot-teaching serve` / `robot-teaching plan`
 ├── tests/                          pytest suite (runs against the simulator)
 └── third_party/reBotArm_control_py git submodule (vendor library: actuator, kinematics, dynamics)
@@ -148,7 +148,8 @@ the traces: the time axis then shows the controller clock and dragging a trace l
 time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
 the selected joint to a CSV file that downloads on **Stop**, with the columns `t_s`, `joint`,
 `q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm` and `run` (`run` increments when
-the server restarts, where `t_s` starts again from zero). **Spectrum** adds a fourth strip
+the server restarts, where `t_s` starts again from zero); **Plot…** opens the offline plotter for
+such a file (below). **Spectrum** adds a fourth strip
 with the amplitude spectrum (dB) of the tracking error, a position or a torque over the samples
 on screen: Welch's estimate from Hann-windowed, detrended segments of about 2 s (Δf ≈ 0.5 Hz at
 500 Hz; a segment with a hole is left out), the highest peak above 1 Hz marked and read out,
@@ -162,6 +163,21 @@ missing. The scope survives a reconnect and a server restart without a page relo
 Programmatically, send `{"trace_joint": i}` on the `/ws/state` websocket and read the `trace`
 chunk of each message; its `epoch` identifies the server run, so a new value means the clock
 `t` started again from zero.
+
+**Offline plotter.** http://127.0.0.1:8000/plot (the **Plot…** button of the Scope card) shows a
+recorded CSV file with the same three strips and spectrum as the live scope, drawn by the same
+code. The page needs no server: `src/robot_teaching/server/static/plot.html` can be opened
+straight from disk, and the file is read by the browser, never uploaded. **Open CSV…** (or a
+drop anywhere on the page) loads one or more recordings; a recording that spans a server restart
+holds more than one *run* (the `run` column changes and `t_s` starts again from zero) and each
+run is listed on its own. The strip at the top shows the whole run's tracking error with the
+window outlined: click or drag it to jump, drag a trace to move through time, **−** / **+**,
+Ctrl+wheel or the − and + keys zoom between 100 ms and the whole run (**Fit**), ← → move by half
+a window, and hovering a trace reads the sample under the pointer. The summary line gives the
+run's length, sample rate, holes (steps of more than 0.25 s), rows without a measurement and the
+largest tracking error; the readout under the strips gives the same for the samples on screen.
+Positions are shown in degrees, as in the live scope. The CSV reader is `static/record.js`,
+checked by `tests/test_record.py` under Node.
 
 Point semantics: a point's motion type describes how it is *reached* from the previous
 point (the first point from wherever the arm is). A **blend** point is passed through
@@ -248,7 +264,9 @@ The suite covers the program model, the planners (limits, continuity, straightne
 the controller state machine on the simulator (hold, jog, free-drive lock/follow,
 playback tracking and gripper events, stop ramp, e-stop, error fallback) and the HTTP /
 WebSocket API. `tests/test_dsp.py` runs the scope's spectrum maths under Node
-(`node tests/dsp_check.js`) and is skipped when `node` is not installed.
+(`node tests/dsp_check.js`) and `tests/test_record.py` the scope recording reader and the
+drawing module's axis helpers (`node tests/record_check.js`); both are skipped when `node` is
+not installed.
 
 ## Known limitations / next steps
 

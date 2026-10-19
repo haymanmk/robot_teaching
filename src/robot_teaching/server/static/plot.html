@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scope recording plotter</title>
+<link rel="icon" href="data:,">
+<!-- Relative paths: this page works served by the teach pendant (/static/plot.html) and opened
+     straight from disk, without the server. -->
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="plot-page">
+<div id="toast" class="toast hidden"></div>
+
+<section class="card scope" id="scope-card">
+  <div class="card-head">
+    <h2>Scope recording <span class="muted">one joint at the control rate, <span id="plot-window">no file</span></span></h2>
+    <div class="file-actions">
+      <label class="btn blue" title="open one or more CSV files recorded with the pendant's Scope → Record button">Open CSV… <input type="file" id="plot-file" multiple accept=".csv,text/csv" class="file-input"></label>
+      <label class="muted">Recording <select id="plot-select" aria-label="recording"><option value="">none loaded</option></select></label>
+      <span class="seg scope-zoom" aria-label="zoom">
+        <button id="plot-zoom-out" title="zoom out: a longer window (Ctrl+wheel over a trace zooms about the pointer; − / + keys)">−</button>
+        <button id="plot-zoom-in" title="zoom in: a shorter window">+</button>
+      </span>
+      <button class="btn" id="plot-fit" title="show the whole run">Fit</button>
+      <button class="btn" id="plot-fft-toggle" title="show the amplitude spectrum of one signal over the samples on screen: Welch's method, Hann-windowed and detrended 2 s segments averaged, segments with missing samples left out; Ctrl+wheel over it zooms the frequency range">Spectrum</button>
+      <span class="kv" id="plot-summary"></span>
+    </div>
+  </div>
+
+  <div id="plot-drop" class="drop">Drop recordings here, or use <b>Open CSV…</b>. Nothing is uploaded: the file is read by this page.</div>
+
+  <div class="scope-grid">
+    <div class="strip overview">
+      <div class="strip-title">Whole run <span class="muted">tracking error, ° — click or drag to move the window</span></div>
+      <canvas id="plot-overview"></canvas>
+    </div>
+    <div class="strip">
+      <div class="strip-title">Position <span class="muted">°</span>
+        <span class="lg"><i class="sw cmd"></i>commanded <i class="sw meas"></i>measured</span></div>
+      <canvas id="plot-pos" class="pan"></canvas>
+    </div>
+    <div class="strip">
+      <div class="strip-title">Tracking error <span class="muted">° measured − commanded</span></div>
+      <canvas id="plot-err" class="pan"></canvas>
+    </div>
+    <div class="strip">
+      <div class="strip-title">Torque <span class="muted">N·m</span>
+        <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span></div>
+      <canvas id="plot-tau" class="pan"></canvas>
+    </div>
+    <div class="strip hidden" id="plot-fft-strip">
+      <div class="strip-title">Spectrum <span class="muted" id="plot-fft-units">amplitude, dB re 1°</span>
+        <label class="muted">of <select id="plot-fft-signal" aria-label="signal">
+          <option value="err">tracking error</option>
+          <option value="q">measured position</option>
+          <option value="q_cmd">commanded position</option>
+          <option value="tau_cmd">commanded torque</option>
+          <option value="tau_meas">reported torque</option>
+        </select></label>
+        <span class="seg scope-zoom" aria-label="frequency range">
+          <button id="plot-fft-zoom-out" title="wider frequency range (Ctrl+wheel over the spectrum also zooms)">−</button>
+          <button id="plot-fft-zoom-in" title="narrower frequency range">+</button>
+        </span>
+        <span class="kv" id="plot-fft-readout"></span>
+      </div>
+      <canvas id="plot-fft"></canvas>
+    </div>
+  </div>
+  <div class="kv readout" id="plot-readout"></div>
+  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
+</section>
+
+<script src="dsp.js"></script>
+<script src="scope.js"></script>
+<script src="record.js"></script>
+<script src="plot.js"></script>
+</body>
+</html>
