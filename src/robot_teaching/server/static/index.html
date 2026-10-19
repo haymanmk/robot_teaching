@@ -182,6 +182,7 @@
         </span>
         <button class="btn" id="scope-pause" title="freeze the traces: the time axis then shows the controller clock and dragging a trace looks back in time; Resume returns to live. The readout and the recording stay live.">⏸ Pause</button>
         <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, run)">● Record</button>
+        <button class="btn" id="scope-fft-toggle" title="show the amplitude spectrum of one signal over the samples on screen: Welch's method, Hann-windowed and detrended 2 s segments averaged, segments with missing samples left out; Ctrl+wheel over it zooms the frequency range">Spectrum</button>
         <span class="kv" id="scope-readout"></span>
         <button class="btn" id="scope-reset-max" title="forget the largest tracking error seen so far; it is otherwise kept from the moment the joint was picked, across reconnects and server restarts">Reset max</button>
         <button class="btn" id="btn-reload-gains" title="re-read kp/kd, tau_scale and friction from config/teaching.yaml and the hardware YAML and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
@@ -202,10 +203,28 @@
           <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span></div>
         <canvas id="scope-tau"></canvas>
       </div>
+      <div class="strip hidden" id="fft-strip">
+        <div class="strip-title">Spectrum <span class="muted" id="fft-units">amplitude, dB re 1°</span>
+          <label class="muted">of <select id="fft-signal" aria-label="signal">
+            <option value="err">tracking error</option>
+            <option value="q">measured position</option>
+            <option value="q_cmd">commanded position</option>
+            <option value="tau_cmd">commanded torque</option>
+            <option value="tau_meas">reported torque</option>
+          </select></label>
+          <span class="seg scope-zoom" aria-label="frequency range">
+            <button id="fft-zoom-out" title="wider frequency range (Ctrl+wheel over the spectrum also zooms)">−</button>
+            <button id="fft-zoom-in" title="narrower frequency range">+</button>
+          </span>
+          <span class="kv" id="fft-readout"></span>
+        </div>
+        <canvas id="scope-fft"></canvas>
+      </div>
     </div>
-    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame. <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
+    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame. <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
   </section>
 </main>
+<script src="/static/dsp.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
