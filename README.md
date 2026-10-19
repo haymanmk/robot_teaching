@@ -173,9 +173,13 @@ holds more than one *run* (the `run` column changes and `t_s` starts again from 
 run is listed on its own. The strip at the top shows the whole run's tracking error with the
 window outlined: click or drag it to jump, drag a trace to move through time, **−** / **+**,
 Ctrl+wheel or the − and + keys zoom between 100 ms and the whole run (**Fit**), ← → move by half
-a window, and hovering a trace reads the sample under the pointer. The summary line gives the
-run's length, sample rate, holes (steps of more than 0.25 s), rows without a measurement and the
-largest tracking error; the readout under the strips gives the same for the samples on screen.
+a window, and hovering a trace reads the sample under the pointer. **Compare** overlays a second
+recording, B, on the same axes, dashed and a little lighter, with its start on the start of the
+first run; **offset** (or Shift+drag on a trace) slides B in time and **Align starts** puts it
+back, so a move recorded before and after a gain change can be laid over itself. The summary
+line gives each recording's length, sample rate, holes (steps of more than 0.25 s), rows without
+a measurement and largest tracking error; the readout under the strips gives the same for the
+samples on screen, the hover values and the spectrum show A and B together.
 Positions are shown in degrees, as in the live scope. The CSV reader is `static/record.js`,
 checked by `tests/test_record.py` under Node.
 

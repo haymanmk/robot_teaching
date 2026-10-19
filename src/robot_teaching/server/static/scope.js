@@ -48,15 +48,17 @@
    * window (s), the times of the samples on screen (every series' `values` runs parallel to `t`)
    * and whether to label the clock itself (otherwise seconds before the right edge). `series` is
    * [{ values, color }]; a null or NaN value, or a step in `t` above `opts.gap` (default 0.25 s),
-   * lifts the pen. `opts`: symmetric (centre the scale on zero), minSpan (least value range),
-   * bare (no axes or grid, for an overview), cursor (a time: draw a vertical marker there).
+   * lifts the pen. A series may bring its own times (`t`, parallel to its values, plus `tOffset`
+   * added to them: another recording overlaid on this axis) and its own look (`dash`, `alpha`,
+   * `width`). `opts`: symmetric (centre the scale on zero), minSpan (least value range), bare (no
+   * axes or grid, for an overview), cursor (a time: draw a vertical marker there).
    */
   function drawStrip(canvas, axis, series, opts) {
     const c = setupCanvas(canvas);
     if (!c) return;
     opts = opts || {};
     const { ctx, W: Wpx, H, lineColor, muted } = c;
-    const { tEnd, W, t } = axis, m = t.length, gap = opts.gap === undefined ? GAP : opts.gap;
+    const { tEnd, W, t } = axis, gap = opts.gap === undefined ? GAP : opts.gap;
     const x0 = opts.bare ? 0 : PLOT_LEFT, x1 = Wpx - (opts.bare ? 0 : PLOT_RIGHT), y0 = opts.bare ? 2 : 6, y1 = H - (opts.bare ? 2 : 16);
     let lo = Infinity, hi = -Infinity;
     for (const s of series) for (const v of s.values) if (!missing(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
@@ -90,25 +92,28 @@
     // Nothing a series does may leave the plot area (the axes and labels live outside it).
     ctx.save();
     ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
-    ctx.lineWidth = opts.bare ? 1 : 1.5; ctx.lineJoin = "round";
+    ctx.lineJoin = "round";
     const colOf = (tt) => Math.floor(X(tt) - x0);
     for (const s of series) {
-      ctx.strokeStyle = s.color; ctx.beginPath();
+      const ts = s.t || t, off = s.tOffset || 0, m = Math.min(ts.length, s.values.length);
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.width || (opts.bare ? 1 : 1.5);
+      ctx.setLineDash(s.dash || []); ctx.globalAlpha = s.alpha === undefined ? 1 : s.alpha;
+      ctx.beginPath();
       let pen = false;
       if (m <= 2 * (x1 - x0)) {
         for (let i = 0; i < m; i++) {
           const v = s.values[i];
           if (missing(v)) { pen = false; continue; }
-          if (pen && t[i] - t[i - 1] > gap) pen = false;                   // missing samples: show the hole
-          const x = X(t[i]), y = Y(v);
+          if (pen && ts[i] - ts[i - 1] > gap) pen = false;                 // missing samples: show the hole
+          const x = X(ts[i] + off), y = Y(v);
           if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
         }
       } else {
         // More samples than pixels: one min–max bar per pixel column keeps every spike visible.
         let col = null, clo = 0, chi = 0;
         for (let i = 0; i <= m; i++) {
-          const v = i < m ? s.values[i] : null, c = i < m ? colOf(t[i]) : null;
-          const isGap = i > 0 && i < m && t[i] - t[i - 1] > gap;
+          const v = i < m ? s.values[i] : null, c = i < m ? colOf(ts[i] + off) : null;
+          const isGap = i > 0 && i < m && ts[i] - ts[i - 1] > gap;
           if (col !== null && (c !== col || missing(v) || isGap)) {
             const x = x0 + col + 0.5;
             if (pen) ctx.lineTo(x, Y(chi)); else ctx.moveTo(x, Y(chi));
@@ -121,6 +126,7 @@
       }
       ctx.stroke();
     }
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
     if (opts.cursor !== undefined && opts.cursor !== null && Number.isFinite(opts.cursor)) {
       const x = Math.round(X(opts.cursor)) + 0.5;
       ctx.lineWidth = 1; ctx.strokeStyle = muted; ctx.globalAlpha = 0.9;
@@ -129,10 +135,29 @@
     ctx.restore();
   }
 
+  const dB = (a) => 20 * Math.log10(Math.max(a, 1e-6));
+  /** The highest bin of `spec` at or above `fmin` Hz (default 1) and below `fmax`: { k, f, amp, dB }, or null. */
+  function spectrumPeak(spec, fmin, fmax) {
+    if (!spec) return null;
+    fmin = fmin === undefined ? 1 : fmin;
+    fmax = fmax === undefined ? Infinity : fmax;
+    let peak = -1;
+    for (let k = 1; k < spec.f.length && spec.f[k] <= fmax; k++) if (spec.f[k] >= fmin && (peak < 0 || spec.amp[k] > spec.amp[peak])) peak = k;
+    return peak > 0 ? { k: peak, f: spec.f[peak], amp: spec.amp[peak], dB: dB(spec.amp[peak]) } : null;
+  }
+  /** The readout line for a spectrum: its peak, bin width and the segments it averages. */
+  function spectrumReadout(spec, unit, fmax) {
+    const pk = spectrumPeak(spec, 1, fmax);
+    return (pk ? `peak ${pk.f.toFixed(2)} Hz: ${pk.amp.toPrecision(3)} ${unit} (${pk.dB.toFixed(1)} dB)   ` : "")
+      + `Δf ${spec.df.toFixed(2)} Hz   ${spec.segments} × ${spec.n} samples at ${spec.fs.toFixed(0)} Hz`;
+  }
+
   /**
    * The amplitude spectrum `spec` (from scopeDSP.welch) in dB, up to `opts.fmax` Hz (clipped to
    * half the sample rate), with the highest peak above 1 Hz marked. `opts`: unit (for the readout),
-   * accent (the trace colour), empty (the text shown when spec is null). Returns the readout line.
+   * accent (the trace colour), empty (the text shown when spec is null), others (more spectra
+   * drawn under it on the same axes, [{ spec, color, dash, alpha }], sharing the dB scale).
+   * Returns the readout line of `spec`.
    */
   function drawSpectrumStrip(canvas, spec, opts) {
     const c = setupCanvas(canvas);
@@ -147,15 +172,18 @@
       return "";
     }
     const fmax = Math.min(opts.fmax || spec.fs / 2, spec.fs / 2);
-    const nb = Math.min(spec.f.length, Math.floor(fmax / spec.df) + 1);
-    const dB = (a) => 20 * Math.log10(Math.max(a, 1e-6));
-    let lo = Infinity, hi = -Infinity, peak = -1;
-    for (let k = 1; k < nb; k++) {                               // the DC bin is left out: detrended, it only says how well
-      const v = dB(spec.amp[k]);
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-      if (spec.f[k] >= 1 && (peak < 0 || spec.amp[k] > spec.amp[peak])) peak = k;
+    const bins = (sp) => Math.min(sp.f.length, Math.floor(fmax / sp.df) + 1);
+    const others = (opts.others || []).filter((o) => o && o.spec);
+    let lo = Infinity, hi = -Infinity;
+    for (const sp of others.map((o) => o.spec).concat([spec])) {
+      const nb = bins(sp);
+      for (let k = 1; k < nb; k++) {                             // the DC bin is left out: detrended, it only says how well
+        const v = dB(sp.amp[k]);
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
     }
+    const nb = bins(spec), pk = spectrumPeak(spec, 1, fmax), peak = pk ? pk.k : -1;
     if (!Number.isFinite(lo)) { lo = -60; hi = 0; }
     lo = Math.floor((lo - 3) / 10) * 10; hi = Math.ceil((hi + 3) / 10) * 10;
     if (hi - lo < 30) hi = lo + 30;
@@ -175,7 +203,14 @@
     ctx.globalAlpha = 1;
     ctx.save();
     ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
-    ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.strokeStyle = accent; ctx.beginPath();
+    ctx.lineWidth = 1.5; ctx.lineJoin = "round";
+    for (const o of others) {
+      const sp = o.spec, n = bins(sp);
+      ctx.strokeStyle = o.color || accent; ctx.setLineDash(o.dash || []); ctx.globalAlpha = o.alpha === undefined ? 1 : o.alpha; ctx.beginPath();
+      for (let k = 1; k < n; k++) { const x = X(sp.f[k]), y = Y(dB(sp.amp[k])); if (k === 1) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.strokeStyle = accent; ctx.beginPath();
     for (let k = 1; k < nb; k++) { const x = X(spec.f[k]), y = Y(dB(spec.amp[k])); if (k === 1) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
     ctx.stroke();
     if (peak > 0) { ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(X(spec.f[peak]), Y(dB(spec.amp[peak])), 3.5, 0, 2 * Math.PI); ctx.fill(); }
@@ -185,9 +220,8 @@
       ctx.fillStyle = muted; ctx.textAlign = right ? "right" : "left"; ctx.textBaseline = "bottom";
       ctx.fillText(`${spec.f[peak].toFixed(2)} Hz`, x + (right ? -6 : 6), y - 2);
     }
-    return (peak > 0 ? `peak ${spec.f[peak].toFixed(2)} Hz: ${spec.amp[peak].toPrecision(3)} ${unit} (${dB(spec.amp[peak]).toFixed(1)} dB)   ` : "")
-      + `Δf ${spec.df.toFixed(2)} Hz   ${spec.segments} × ${spec.n} samples at ${spec.fs.toFixed(0)} Hz`;
+    return spectrumReadout(spec, unit, fmax);
   }
 
-  return { PLOT_LEFT, PLOT_RIGHT, GAP, niceStep, niceTicks, fmtTick, lowerBound, upperBound, setupCanvas, drawStrip, drawSpectrumStrip };
+  return { PLOT_LEFT, PLOT_RIGHT, GAP, niceStep, niceTicks, fmtTick, lowerBound, upperBound, setupCanvas, drawStrip, spectrumPeak, spectrumReadout, drawSpectrumStrip };
 });

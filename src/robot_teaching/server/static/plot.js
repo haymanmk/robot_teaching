@@ -7,13 +7,15 @@
   const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment, as in the live scope
   const GAP = scopeDraw.GAP;
+  const DASH = [4, 3], B_ALPHA = 0.7;                            // the comparison recording: dashed, a little lighter, the same hues
   const fmt = (v, d = 1) => (v === null || v === undefined || !Number.isFinite(v)) ? "—" : Number(v).toFixed(d);
   const fmtN = (n) => n.toLocaleString("en-US");
 
   const entries = [];                      // every run of every loaded file
   let cur = null;                          // the entry on screen
+  const cmp = { id: null, offset: 0 };     // the comparison recording (B) and its shift (s) after aligning the starts
   const view = { W: 5, tEnd: 0 };          // the window (s) and the time at its right edge, in the run's clock
-  const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "" };
+  const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "", specB: null, keyB: "" };
   const ov = { key: "", cache: null };     // the overview trace, cached per run and canvas size
   let cursorT = null;                      // the time under the pointer, or null
   let drawPending = false;
@@ -41,27 +43,66 @@
       }
       toast(`${file.name}: ${fmtN(rec.rows)} samples${rec.runs.length > 1 ? ` in ${rec.runs.length} runs` : ""}`);
     }
-    const sel = $("plot-select");
-    sel.innerHTML = "";
-    if (!entries.length) { const o = document.createElement("option"); o.value = ""; o.textContent = "none loaded"; sel.appendChild(o); }
-    for (const e of entries) { const o = document.createElement("option"); o.value = String(e.id); o.textContent = e.label; sel.appendChild(o); }
-    if (last) select(last.id);
+    if (last) select(last.id); else rebuildSelects();
+  }
+  const cmpEntry = () => (cmp.id === null || !cur || cmp.id === cur.id ? null : entries[cmp.id] || null);
+  const shiftOf = (B) => cur.summary.t0 - B.summary.t0 + cmp.offset;   // B's clock + shift = A's clock
+  function rebuildSelects() {
+    const sel = $("plot-select"), cs = $("plot-compare");
+    const option = (parent, value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; parent.appendChild(o); };
+    sel.innerHTML = ""; cs.innerHTML = "";
+    if (!entries.length) option(sel, "", "none loaded");
+    for (const e of entries) option(sel, String(e.id), e.label);
+    option(cs, "", "none");
+    for (const e of entries) if (!cur || e.id !== cur.id) option(cs, String(e.id), e.label);
+    sel.value = cur ? String(cur.id) : "";
+    cs.value = cmpEntry() ? String(cmp.id) : "";
+    cs.disabled = entries.length < 2;
   }
   function select(id) {
     cur = entries[id] || null;
-    $("plot-select").value = cur ? String(cur.id) : "";
-    fft.key = ""; ov.key = ""; cursorT = null;
-    const s = $("plot-summary");
-    if (!cur) { s.textContent = ""; fit(); return; }
-    const m = cur.summary, parts = [];
-    if (cur.joint) parts.push(cur.joint);
-    if (cur.nRuns > 1) parts.push(`run ${cur.run.run} of ${cur.nRuns}`);
-    parts.push(`${fmt(m.duration, 1)} s`, `${fmtN(m.samples)} samples at ${fmt(m.rate, 0)} Hz`);
-    if (m.gaps) parts.push(`${m.gaps} hole${m.gaps === 1 ? "" : "s"}`);
-    if (m.missing) parts.push(`${fmtN(m.missing)} without a measurement`);
-    parts.push(`max |error| ${fmt(m.errMax, 3)}° at ${fmt(m.errMaxAt, 2)} s`);
-    s.textContent = parts.concat(cur.problems).join(" · ");
+    if (cur && cmp.id === cur.id) cmp.id = null;
+    fft.key = fft.keyB = ""; ov.key = ""; cursorT = null;
+    rebuildSelects();
+    showSummary();
     fit();
+  }
+  function compare(id) {
+    cmp.id = id === null || id === undefined || !entries[id] ? null : id;
+    cmp.offset = 0; $("plot-offset").value = "0";
+    fft.keyB = ""; cursorT = null;
+    rebuildSelects();
+    showSummary();
+    requestDraw();
+  }
+  function setOffset(v) {
+    cmp.offset = Number.isFinite(v) ? v : 0;
+    if (document.activeElement !== $("plot-offset")) $("plot-offset").value = cmp.offset.toFixed(3);
+    showSummary();
+    requestDraw();
+  }
+  function showSummary() {
+    const s = $("plot-summary"), B = cmpEntry();
+    const line = (e, tag) => {
+      const m = e.summary, parts = [];
+      if (tag) parts.push(tag);
+      if (e.joint) parts.push(e.joint);
+      if (e.nRuns > 1) parts.push(`run ${e.run.run} of ${e.nRuns}`);
+      parts.push(`${fmt(m.duration, 1)} s`, `${fmtN(m.samples)} samples at ${fmt(m.rate, 0)} Hz`);
+      if (m.gaps) parts.push(`${m.gaps} hole${m.gaps === 1 ? "" : "s"}`);
+      if (m.missing) parts.push(`${fmtN(m.missing)} without a measurement`);
+      parts.push(`max |error| ${fmt(m.errMax, 3)}° at ${fmt(m.errMaxAt, 2)} s`);
+      return parts.concat(e.problems).join(" · ");
+    };
+    if (!cur) s.textContent = "";
+    else if (!B) s.textContent = line(cur, "");
+    else {
+      const shift = cmp.offset ? `, shifted ${cmp.offset > 0 ? "+" : ""}${cmp.offset.toFixed(3)} s` : "";
+      const other = B.joint && cur.joint && B.joint !== cur.joint ? " · a different joint" : "";
+      s.textContent = `${line(cur, "A")}\n${line(B, "B")} · starts aligned${shift}${other}`;
+    }
+    $("plot-offset-wrap").classList.toggle("hidden", !B);
+    document.querySelectorAll(".lg-b").forEach((el) => el.classList.toggle("hidden", !B));
   }
 
   // ── the window ───────────────────────────────────────────────────────────
@@ -99,14 +140,20 @@
     let drag = null;
     canvas.addEventListener("pointerdown", (ev) => {
       if (!cur) return;
-      drag = { x: ev.clientX, end: view.tEnd, px: Math.max(1, canvas.clientWidth - scopeDraw.PLOT_LEFT - scopeDraw.PLOT_RIGHT), moved: false };
+      // A plain drag moves the window; with Shift (and a comparison on screen) it slides B instead.
+      drag = { x: ev.clientX, end: view.tEnd, offset: cmp.offset, shift: !!(ev.shiftKey && cmpEntry()), px: Math.max(1, canvas.clientWidth - scopeDraw.PLOT_LEFT - scopeDraw.PLOT_RIGHT), moved: false };
       canvas.setPointerCapture(ev.pointerId);
     });
     canvas.addEventListener("pointermove", (ev) => {
       if (!cur) return;
       if (drag) {
         if (Math.abs(ev.clientX - drag.x) > 2) drag.moved = true;
-        if (drag.moved) { cursorT = null; setEnd(drag.end - (ev.clientX - drag.x) / drag.px * view.W); return; }
+        if (drag.moved) {
+          cursorT = null;
+          const dt = (ev.clientX - drag.x) / drag.px * view.W;
+          if (drag.shift) setOffset(drag.offset + dt); else setEnd(drag.end - dt);
+          return;
+        }
       }
       cursorT = timeAt(canvas, ev.offsetX);
       requestDraw();
@@ -150,16 +197,18 @@
     $("plot-fft-zoom-out").disabled = i === FFT_FMAX.length - 1;
     requestDraw();
   }
-  function drawSpectrum(run, i0, i1, t, accent) {
-    const unit = FFT_UNITS[fft.signal];
+  function drawSpectrum(run, i0, i1, t, accent, bs) {
+    const unit = FFT_UNITS[fft.signal], welchOpts = { segmentSeconds: FFT_SEGMENT, maxSegments: 32, gap: GAP };
+    const signal = (r) => (fft.signal === "err" ? r.err_deg : fft.signal === "q" ? r.q_deg : fft.signal === "q_cmd" ? r.q_cmd_deg : r[fft.signal]);
     $("plot-fft-units").textContent = `amplitude, dB re 1 ${unit}`;
     const key = `${cur.id}|${fft.signal}|${i0}|${i1}`;
-    if (key !== fft.key) {
-      const src = fft.signal === "err" ? run.err_deg : fft.signal === "q" ? run.q_deg : fft.signal === "q_cmd" ? run.q_cmd_deg : run[fft.signal];
-      fft.spec = scopeDSP.welch(src.subarray(i0, i1), t, { segmentSeconds: FFT_SEGMENT, maxSegments: 32, gap: GAP });
-      fft.key = key;
-    }
-    $("plot-fft-readout").textContent = scopeDraw.drawSpectrumStrip($("plot-fft"), fft.spec, { unit, fmax: fft.fmax, accent, empty: "fewer than 64 gap-free samples on screen" });
+    if (key !== fft.key) { fft.spec = scopeDSP.welch(signal(run).subarray(i0, i1), t, welchOpts); fft.key = key; }
+    const keyB = bs ? `${cmp.id}|${fft.signal}|${bs.j0}|${bs.j1}` : "";
+    if (keyB !== fft.keyB) { fft.specB = bs ? scopeDSP.welch(signal(bs.rb).subarray(bs.j0, bs.j1), bs.t, welchOpts) : null; fft.keyB = keyB; }
+    const empty = "fewer than 64 gap-free samples on screen";
+    let line = scopeDraw.drawSpectrumStrip($("plot-fft"), fft.spec, { unit, fmax: fft.fmax, accent, empty, others: bs ? [{ spec: fft.specB, color: accent, dash: DASH, alpha: B_ALPHA }] : [] });
+    if (bs) line = `A  ${line || empty}     B  ${fft.specB ? scopeDraw.spectrumReadout(fft.specB, unit, Math.min(fft.fmax, fft.specB.fs / 2)) : empty}`;
+    $("plot-fft-readout").textContent = line;
   }
 
   // ── drawing ──────────────────────────────────────────────────────────────
@@ -195,12 +244,22 @@
     const i0 = Math.max(0, scopeDraw.lowerBound(run.t, tEnd - W) - 1);
     const t = run.t.subarray(i0, i1);
     const axis = { tEnd, W, t, absolute: true };
-    scopeDraw.drawStrip($("plot-pos"), axis, [{ values: run.q_cmd_deg.subarray(i0, i1), color: blue }, { values: run.q_deg.subarray(i0, i1), color: amber }], { minSpan: 0.2, cursor: cursorT });
-    scopeDraw.drawStrip($("plot-err"), axis, [{ values: run.err_deg.subarray(i0, i1), color: accent }], { symmetric: true, minSpan: 0.1, cursor: cursorT });
-    scopeDraw.drawStrip($("plot-tau"), axis, [{ values: run.tau_cmd.subarray(i0, i1), color: blue }, { values: run.tau_meas.subarray(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5, cursor: cursorT });
+    // The comparison, B: its samples that fall in the window once shifted onto A's clock, drawn
+    // first (dashed, lighter) so A stays on top where the two coincide.
+    const B = cmpEntry();
+    let bs = null;
+    if (B) {
+      const rb = B.run, sh = shiftOf(B);
+      const j1 = scopeDraw.upperBound(rb.t, tEnd - sh), j0 = Math.max(0, scopeDraw.lowerBound(rb.t, tEnd - W - sh) - 1);
+      bs = { rb, j0, j1, sh, t: rb.t.subarray(j0, j1) };
+    }
+    const bSeries = (col, color) => (bs ? [{ values: bs.rb[col].subarray(bs.j0, bs.j1), color, t: bs.t, tOffset: bs.sh, dash: DASH, alpha: B_ALPHA }] : []);
+    scopeDraw.drawStrip($("plot-pos"), axis, bSeries("q_cmd_deg", blue).concat(bSeries("q_deg", amber), [{ values: run.q_cmd_deg.subarray(i0, i1), color: blue }, { values: run.q_deg.subarray(i0, i1), color: amber }]), { minSpan: 0.2, cursor: cursorT });
+    scopeDraw.drawStrip($("plot-err"), axis, bSeries("err_deg", accent).concat([{ values: run.err_deg.subarray(i0, i1), color: accent }]), { symmetric: true, minSpan: 0.1, cursor: cursorT });
+    scopeDraw.drawStrip($("plot-tau"), axis, bSeries("tau_cmd", blue).concat(bSeries("tau_meas", amber), [{ values: run.tau_cmd.subarray(i0, i1), color: blue }, { values: run.tau_meas.subarray(i0, i1), color: amber }]), { symmetric: true, minSpan: 0.5, cursor: cursorT });
     drawOverview(accent);
-    if (fft.on) drawSpectrum(run, i0, i1, t, accent);
-    drawReadout(run, i0, i1);
+    if (fft.on) drawSpectrum(run, i0, i1, t, accent, bs);
+    drawReadout(run, i0, i1, bs);
   }
   // The whole run's tracking error, drawn once per run and canvas size, with the window outlined.
   function drawOverview(accent) {
@@ -227,25 +286,38 @@
     ctx.strokeStyle = accent; ctx.lineWidth = 1;
     ctx.strokeRect(Math.round(xa) + 0.5, 0.5, Math.max(1, Math.round(xb - xa)) - 1, H - 1);
   }
-  function drawReadout(run, i0, i1) {
+  function drawReadout(run, i0, i1, bs) {
     const ro = $("plot-readout");
-    if (cursorT !== null && run.t.length) {
-      let i = scopeDraw.lowerBound(run.t, cursorT);
-      if (i > 0 && (i >= run.t.length || run.t[i] - cursorT > cursorT - run.t[i - 1])) i--;
-      const tm = run.tau_meas[i];
-      ro.textContent = `t ${run.t[i].toFixed(4)} s   commanded ${fmt(run.q_cmd_deg[i], 3)}°   measured ${fmt(run.q_deg[i], 3)}°   error ${fmt(run.err_deg[i], 3)}°   torque ${fmt(run.tau_cmd[i], 3)} N·m`
+    // The sample of r nearest to tc (its own clock), or none when the nearest is more than a hole away.
+    const sampleLine = (r, tc, tag) => {
+      let i = scopeDraw.lowerBound(r.t, tc);
+      if (i > 0 && (i >= r.t.length || r.t[i] - tc > tc - r.t[i - 1])) i--;
+      if (!r.t.length || Math.abs(r.t[i] - tc) > GAP) return `${tag}no sample here`;
+      const tm = r.tau_meas[i];
+      return `${tag}t ${r.t[i].toFixed(4)} s   commanded ${fmt(r.q_cmd_deg[i], 3)}°   measured ${fmt(r.q_deg[i], 3)}°   error ${fmt(r.err_deg[i], 3)}°   torque ${fmt(r.tau_cmd[i], 3)} N·m`
         + (Number.isFinite(tm) ? ` (motor ${fmt(tm, 3)})` : "");
+    };
+    const statsLine = (r, a, b, tag) => {
+      const s = scopeRecord.summarize(r, a, b);
+      return `${tag}${fmtN(s.samples)} sample${s.samples === 1 ? "" : "s"} on screen   max |error| ${fmt(s.errMax, 3)}° at ${fmt(s.errMaxAt, 2)} s   rms ${fmt(s.errRms, 3)}°   peak |torque| ${fmt(s.tauMax, 2)} N·m`
+        + (s.gaps ? `   ${s.gaps} hole${s.gaps === 1 ? "" : "s"}` : "") + (s.missing ? `   ${fmtN(s.missing)} without a measurement` : "");
+    };
+    const tagA = bs ? "A  " : "";
+    if (cursorT !== null && run.t.length) {
+      ro.textContent = sampleLine(run, cursorT, tagA) + (bs ? "\n" + sampleLine(bs.rb, cursorT - bs.sh, "B  ") : "");
       return;
     }
-    const s = scopeRecord.summarize(run, i0, i1);
-    ro.textContent = `${fmtN(s.samples)} samples on screen   max |error| ${fmt(s.errMax, 3)}° at ${fmt(s.errMaxAt, 2)} s   rms ${fmt(s.errRms, 3)}°   peak |torque| ${fmt(s.tauMax, 2)} N·m`
-      + (s.gaps ? `   ${s.gaps} hole${s.gaps === 1 ? "" : "s"}` : "") + (s.missing ? `   ${fmtN(s.missing)} without a measurement` : "");
+    ro.textContent = statsLine(run, i0, i1, tagA) + (bs ? "\n" + statsLine(bs.rb, bs.j0, bs.j1, "B  ") : "");
   }
 
   // ── wiring ───────────────────────────────────────────────────────────────
   function init() {
     $("plot-file").onchange = (ev) => { openFiles(ev.target.files); ev.target.value = ""; };
     $("plot-select").onchange = (ev) => { if (ev.target.value !== "") select(Number(ev.target.value)); };
+    $("plot-compare").onchange = (ev) => compare(ev.target.value === "" ? null : Number(ev.target.value));
+    $("plot-offset").oninput = (ev) => setOffset(Number(ev.target.value));
+    $("plot-offset").onchange = (ev) => { ev.target.value = cmp.offset.toFixed(3); };
+    $("plot-align").onclick = () => setOffset(0);
     $("plot-zoom-in").onclick = () => zoom(-1);
     $("plot-zoom-out").onclick = () => zoom(+1);
     $("plot-fit").onclick = fit;

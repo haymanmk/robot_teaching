@@ -18,6 +18,11 @@
     <div class="file-actions">
       <label class="btn blue" title="open one or more CSV files recorded with the pendant's Scope → Record button">Open CSV… <input type="file" id="plot-file" multiple accept=".csv,text/csv" class="file-input"></label>
       <label class="muted">Recording <select id="plot-select" aria-label="recording"><option value="">none loaded</option></select></label>
+      <label class="muted" title="overlay a second recording (B) on the same axes, dashed; its start is aligned with the start of the first one">Compare <select id="plot-compare" aria-label="comparison recording" disabled><option value="">none</option></select></label>
+      <span id="plot-offset-wrap" class="file-actions hidden">
+        <label class="muted" title="shift of B in seconds after aligning the starts (positive: later); Shift+drag a trace slides it">offset <input type="number" id="plot-offset" step="0.01" value="0" aria-label="offset of the comparison, seconds"> s</label>
+        <button class="btn" id="plot-align" title="put the start of B back on the start of A">Align starts</button>
+      </span>
       <span class="seg scope-zoom" aria-label="zoom">
         <button id="plot-zoom-out" title="zoom out: a longer window (Ctrl+wheel over a trace zooms about the pointer; − / + keys)">−</button>
         <button id="plot-zoom-in" title="zoom in: a shorter window">+</button>
@@ -37,16 +42,19 @@
     </div>
     <div class="strip">
       <div class="strip-title">Position <span class="muted">°</span>
-        <span class="lg"><i class="sw cmd"></i>commanded <i class="sw meas"></i>measured</span></div>
+        <span class="lg"><i class="sw cmd"></i>commanded <i class="sw meas"></i>measured</span>
+        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B measured</span></div>
       <canvas id="plot-pos" class="pan"></canvas>
     </div>
     <div class="strip">
-      <div class="strip-title">Tracking error <span class="muted">° measured − commanded</span></div>
+      <div class="strip-title">Tracking error <span class="muted">° measured − commanded</span>
+        <span class="lg lg-b hidden"><i class="sw err"></i>A <i class="sw err dashed"></i>B</span></div>
       <canvas id="plot-err" class="pan"></canvas>
     </div>
     <div class="strip">
       <div class="strip-title">Torque <span class="muted">N·m</span>
-        <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span></div>
+        <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span>
+        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B reported</span></div>
       <canvas id="plot-tau" class="pan"></canvas>
     </div>
     <div class="strip hidden" id="plot-fft-strip">
@@ -62,13 +70,14 @@
           <button id="plot-fft-zoom-out" title="wider frequency range (Ctrl+wheel over the spectrum also zooms)">−</button>
           <button id="plot-fft-zoom-in" title="narrower frequency range">+</button>
         </span>
+        <span class="lg lg-b hidden"><i class="sw err"></i>A <i class="sw err dashed"></i>B</span>
         <span class="kv" id="plot-fft-readout"></span>
       </div>
       <canvas id="plot-fft"></canvas>
     </div>
   </div>
   <div class="kv readout" id="plot-readout"></div>
-  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
+  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. <b>Compare</b> overlays a second recording, B, dashed on the same axes with its start on the start of A; <b>offset</b> or Shift+drag on a trace slides B in time, and the readouts, the hover values and the spectrum then show A and B together. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
 </section>
 
 <script src="dsp.js"></script>

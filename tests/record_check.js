@@ -99,5 +99,17 @@ function synth(seconds, run, opts) {
   check(draw.fmtTick(123.4) === "123" && draw.fmtTick(12.34) === "12.3" && draw.fmtTick(1.234) === "1.23" && draw.fmtTick(0.0123) === "0.012", "tick labels");
 }
 
+// 7. The spectrum peak helper shared by the two pages: the highest bin at or above 1 Hz, within fmax.
+{
+  const spec = { f: new Float64Array([0, 0.5, 1, 1.5, 2, 2.5]), amp: new Float64Array([5, 2, 0.2, 0.9, 0.3, 1.2]), df: 0.5, fs: 5, n: 10, segments: 1 };
+  const pk = draw.spectrumPeak(spec);
+  check(pk && pk.k === 5 && close(pk.f, 2.5) && close(pk.dB, 20 * Math.log10(1.2)), `peak at ${pk && pk.f} Hz (${pk && pk.dB.toFixed(2)} dB), the DC and 0.5 Hz bins left out`);
+  const pk2 = draw.spectrumPeak(spec, 1, 2);
+  check(pk2 && close(pk2.f, 1.5), `peak below 2 Hz at ${pk2 && pk2.f} Hz`);
+  check(draw.spectrumPeak(null) === null, "no spectrum: null");
+  const line = draw.spectrumReadout(spec, "°", 2);
+  check(line.startsWith("peak 1.50 Hz: 0.900 °") && line.includes("Δf 0.50 Hz") && line.includes("1 × 10 samples at 5 Hz"), `readout: ${line}`);
+}
+
 console.log(failures ? `${failures} FAILED` : "all record checks passed");
 process.exit(failures ? 1 : 0);

@@ -143,3 +143,10 @@ label.btn, a.btn { display: inline-flex; align-items: center; cursor: pointer; t
 .strip canvas.pan:active { cursor: grabbing; }
 #plot-readout { font-variant-numeric: tabular-nums; white-space: pre-wrap; margin-top: 8px; min-height: 1.4em; }
 #plot-summary { font-variant-numeric: tabular-nums; }
+.sw.err { background: var(--scope-err); }
+.sw.dashed { opacity: .75; }   /* the comparison recording: dashed, a little lighter, the same hue per quantity */
+.sw.cmd.dashed { background: repeating-linear-gradient(90deg, var(--scope-cmd) 0 3px, transparent 3px 5px); }
+.sw.meas.dashed { background: repeating-linear-gradient(90deg, var(--scope-meas) 0 3px, transparent 3px 5px); }
+.sw.err.dashed { background: repeating-linear-gradient(90deg, var(--scope-err) 0 3px, transparent 3px 5px); }
+#plot-offset { width: 76px; }
+#plot-summary { white-space: pre-wrap; }
