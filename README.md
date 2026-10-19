@@ -148,7 +148,14 @@ the traces: the time axis then shows the controller clock and dragging a trace l
 time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
 the selected joint to a CSV file that downloads on **Stop**, with the columns `t_s`, `joint`,
 `q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm` and `run` (`run` increments when
-the server restarts, where `t_s` starts again from zero). The readout keeps the largest
+the server restarts, where `t_s` starts again from zero). **Spectrum** adds a fourth strip
+with the amplitude spectrum (dB) of the tracking error, a position or a torque over the samples
+on screen: Welch's estimate from Hann-windowed, detrended segments of about 2 s (Δf ≈ 0.5 Hz at
+500 Hz; a segment with a hole is left out), the highest peak above 1 Hz marked and read out,
+and − / + or Ctrl+wheel over it setting the frequency range from 5 Hz up to half the sample
+rate. A wobble is a peak in the error; the same peak in the commanded torque means the loop
+drives it. The estimate lives in `static/dsp.js`; `tests/test_dsp.py` checks it under Node.
+The readout keeps the largest
 tracking-error magnitude seen since the joint was picked, over every sample received rather
 than only the ones on screen; **Reset max** clears it. A hole in a trace means samples were
 missing. The scope survives a reconnect and a server restart without a page reload.
@@ -240,7 +247,8 @@ uv run pytest
 The suite covers the program model, the planners (limits, continuity, straightness),
 the controller state machine on the simulator (hold, jog, free-drive lock/follow,
 playback tracking and gripper events, stop ramp, e-stop, error fallback) and the HTTP /
-WebSocket API.
+WebSocket API. `tests/test_dsp.py` runs the scope's spectrum maths under Node
+(`node tests/dsp_check.js`) and is skipped when `node` is not installed.
 
 ## Known limitations / next steps
 

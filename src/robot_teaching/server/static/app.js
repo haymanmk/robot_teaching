@@ -362,12 +362,16 @@
   const SCOPE_GAP = 0.25;                                         // s without samples: lift the pen instead of bridging it
   const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
   const PLOT_LEFT = 52, PLOT_RIGHT = 8;                           // px, the value labels / the right margin
+  const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
+  const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m" };
+  const FFT_SEGMENT = 2.0;                                        // s per Welch segment (rounded to a power of two of samples)
   // errMax is the largest |measured − commanded| (°) over every sample received since the joint
   // was picked or "Reset max" was pressed, not only over the samples on screen; it survives a
   // reconnect and a server restart. epoch identifies the server run the samples came from.
   const scope = { joint: null, window: 5.0, epoch: null, errMax: null, shown: 0, t: [], q_cmd: [], q: [], tau_cmd: [], tau_meas: [] };
   const view = { snap: null, end: 0 };                            // paused: the frozen samples and the time at the right edge
   const rec = { on: false, rows: [], t: [], epoch: null, run: 1, started: 0, name: "", limit: 0 };   // recording: CSV rows plus each row's t
+  const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "", at: 0 };   // spectrum strip: settings and the last estimate
   let scopeDrawPending = false;
 
   function buildScope() {
@@ -386,6 +390,20 @@
     $("scope-record").onclick = () => (rec.on ? scopeRecordStop() : scopeRecordStart());
     $("scope-reset-max").onclick = () => { scope.errMax = null; requestScopeDraw(); };
     ["scope-pos", "scope-err", "scope-tau"].forEach((id) => scopeWireCanvas($(id)));
+    try {
+      fft.on = localStorage.getItem("scopeFft") === "1";
+      const sig = localStorage.getItem("scopeFftSignal"), fm = Number(localStorage.getItem("scopeFftFmax"));
+      if (FFT_UNITS[sig]) fft.signal = sig;
+      if (FFT_FMAX.includes(fm)) fft.fmax = fm;
+    } catch (_) { /* storage blocked */ }
+    $("fft-signal").value = fft.signal;
+    $("fft-signal").onchange = () => { fft.signal = $("fft-signal").value; try { localStorage.setItem("scopeFftSignal", fft.signal); } catch (_) { /* storage blocked */ } requestScopeDraw(); };
+    $("scope-fft-toggle").onclick = () => fftShow(!fft.on);
+    $("fft-zoom-in").onclick = () => fftZoom(-1);
+    $("fft-zoom-out").onclick = () => fftZoom(+1);
+    $("scope-fft").addEventListener("wheel", (ev) => { if (!(ev.ctrlKey || ev.metaKey)) return; ev.preventDefault(); fftZoom(ev.deltaY > 0 ? +1 : -1); }, { passive: false });
+    fftZoom(0);
+    fftShow(fft.on);
     window.addEventListener("beforeunload", (ev) => { if (rec.on) { ev.preventDefault(); ev.returnValue = ""; } });
     scopeZoom(0);
     scopeSelect(sel.value === "" ? null : Number(sel.value));
@@ -539,16 +557,24 @@
   const upperBound = (a, x) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= x) lo = m + 1; else hi = m; } return lo; };
   // axis: { tEnd, W, t, absolute } — the time at the right edge, the window, the times of the
   // samples on screen (series[].values run parallel to t) and whether to label the controller clock.
-  function drawStrip(canvas, axis, series, opts) {
+  // Size the canvas to its CSS box at the device pixel ratio, clear it, and return the drawing
+  // context with the theme colours (null while the canvas has no size, e.g. hidden).
+  function setupCanvas(canvas) {
     const dpr = window.devicePixelRatio || 1;
-    const Wpx = canvas.clientWidth, H = canvas.clientHeight;
-    if (!Wpx || !H) return;
-    if (canvas.width !== Math.round(Wpx * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(Wpx * dpr); canvas.height = Math.round(H * dpr); }
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W || !H) return null;
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) { canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr); }
     const ctx = canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, Wpx, H);
+    ctx.clearRect(0, 0, W, H);
     const css = getComputedStyle(document.documentElement);
-    const lineColor = css.getPropertyValue("--line").trim() || "#262b36", muted = css.getPropertyValue("--muted").trim() || "#8b93a7";
+    ctx.font = "11px system-ui, sans-serif";
+    return { ctx, W, H, lineColor: css.getPropertyValue("--line").trim() || "#262b36", muted: css.getPropertyValue("--muted").trim() || "#8b93a7" };
+  }
+  function drawStrip(canvas, axis, series, opts) {
+    const c = setupCanvas(canvas);
+    if (!c) return;
+    const { ctx, W: Wpx, H, lineColor, muted } = c;
     const { tEnd, W, t } = axis, m = t.length;
     const x0 = PLOT_LEFT, x1 = Wpx - PLOT_RIGHT, y0 = 6, y1 = H - 16;
     let lo = Infinity, hi = -Infinity;
@@ -560,7 +586,7 @@
     const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
     const X = (tt) => x1 - (x1 - x0) * (tEnd - tt) / W;
     const Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
-    ctx.lineWidth = 1; ctx.strokeStyle = lineColor; ctx.fillStyle = muted; ctx.font = "11px system-ui, sans-serif";
+    ctx.lineWidth = 1; ctx.strokeStyle = lineColor; ctx.fillStyle = muted;
     ctx.textAlign = "right"; ctx.textBaseline = "middle";
     for (const v of niceTicks(lo, hi, 4)) {
       const y = Y(v);
@@ -614,6 +640,93 @@
     }
     ctx.restore();
   }
+  // ── spectrum strip ──
+  function fftShow(on) {
+    fft.on = on;
+    $("fft-strip").classList.toggle("hidden", !on);
+    $("scope-fft-toggle").classList.toggle("on", on);
+    try { localStorage.setItem("scopeFft", on ? "1" : "0"); } catch (_) { /* storage blocked */ }
+    requestScopeDraw();
+  }
+  function fftZoom(dir) {
+    const i = Math.min(FFT_FMAX.length - 1, Math.max(0, FFT_FMAX.indexOf(fft.fmax) + dir));
+    fft.fmax = FFT_FMAX[i];
+    try { localStorage.setItem("scopeFftFmax", String(fft.fmax)); } catch (_) { /* storage blocked */ }
+    $("fft-zoom-in").disabled = i === 0;
+    $("fft-zoom-out").disabled = i === FFT_FMAX.length - 1;
+    requestScopeDraw();
+  }
+  // The spectrum of the chosen signal over the samples on screen (src[i0:i1], times t; series holds
+  // the derived position and error series already in degrees). Live, it is re-estimated at most
+  // every 150 ms; paused, whenever the view moves.
+  function drawSpectrum(src, i0, i1, t, series) {
+    const unit = FFT_UNITS[fft.signal];
+    $("fft-units").textContent = `amplitude, dB re 1 ${unit}`;
+    const key = `${scope.joint}|${fft.signal}|${scope.window}|${view.snap ? view.end : "live"}`;
+    const now = performance.now();
+    if (key !== fft.key || (!view.snap && now - fft.at >= 150)) {
+      const values = fft.signal === "err" ? series.err : fft.signal === "q" ? series.q : fft.signal === "q_cmd" ? series.qCmd : src[fft.signal].slice(i0, i1);
+      fft.spec = window.scopeDSP ? scopeDSP.welch(values, t, { segmentSeconds: FFT_SEGMENT, maxSegments: 32, gap: SCOPE_GAP }) : null;
+      fft.key = key; fft.at = now;
+    }
+    drawSpectrumStrip($("scope-fft"), fft.spec, unit);
+  }
+  function drawSpectrumStrip(canvas, spec, unit) {
+    const c = setupCanvas(canvas);
+    if (!c) return;
+    const { ctx, W: Wpx, H, lineColor, muted } = c;
+    const accent = getComputedStyle($("scope-card")).getPropertyValue("--scope-err").trim() || "#6ea8fe";
+    const x0 = PLOT_LEFT, x1 = Wpx - PLOT_RIGHT, y0 = 6, y1 = H - 16;
+    const ro = $("fft-readout");
+    ctx.fillStyle = muted;
+    if (!spec) {
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(scope.joint === null ? "pick a joint" : "waiting for 64 gap-free samples", (x0 + x1) / 2, (y0 + y1) / 2);
+      ro.textContent = "";
+      return;
+    }
+    const fmax = Math.min(fft.fmax, spec.fs / 2);
+    const nb = Math.min(spec.f.length, Math.floor(fmax / spec.df) + 1);
+    const dB = (a) => 20 * Math.log10(Math.max(a, 1e-6));
+    let lo = Infinity, hi = -Infinity, peak = -1;
+    for (let k = 1; k < nb; k++) {                               // the DC bin is left out: detrended, it only says how well
+      const v = dB(spec.amp[k]);
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+      if (spec.f[k] >= 1 && (peak < 0 || spec.amp[k] > spec.amp[peak])) peak = k;
+    }
+    if (!Number.isFinite(lo)) { lo = -60; hi = 0; }
+    lo = Math.floor((lo - 3) / 10) * 10; hi = Math.ceil((hi + 3) / 10) * 10;
+    if (hi - lo < 30) hi = lo + 30;
+    const X = (f) => x0 + (x1 - x0) * f / fmax, Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
+    ctx.lineWidth = 1; ctx.strokeStyle = lineColor;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (const v of niceTicks(lo, hi, 4)) {
+      const y = Y(v);
+      ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.fillText(v.toFixed(0), x0 - 5, y);
+    }
+    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.globalAlpha = 0.6;
+    for (const f of niceTicks(0, fmax, 6)) {
+      const x = X(f); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+      if (x < x1 - 24) ctx.fillText(`${+f.toFixed(2)} Hz`, x, y1 + 3);
+    }
+    ctx.globalAlpha = 1;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0 - 1, y0 - 1, x1 - x0 + 2, y1 - y0 + 2); ctx.clip();
+    ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.strokeStyle = accent; ctx.beginPath();
+    for (let k = 1; k < nb; k++) { const x = X(spec.f[k]), y = Y(dB(spec.amp[k])); if (k === 1) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    ctx.stroke();
+    if (peak > 0) { ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(X(spec.f[peak]), Y(dB(spec.amp[peak])), 3.5, 0, 2 * Math.PI); ctx.fill(); }
+    ctx.restore();
+    if (peak > 0) {
+      const x = X(spec.f[peak]), y = Math.max(y0 + 12, Y(dB(spec.amp[peak]))), right = x > (x0 + x1) / 2;
+      ctx.fillStyle = muted; ctx.textAlign = right ? "right" : "left"; ctx.textBaseline = "bottom";
+      ctx.fillText(`${spec.f[peak].toFixed(2)} Hz`, x + (right ? -6 : 6), y - 2);
+    }
+    ro.textContent = (peak > 0 ? `peak ${spec.f[peak].toFixed(2)} Hz: ${spec.amp[peak].toPrecision(3)} ${unit} (${dB(spec.amp[peak]).toFixed(1)} dB)   ` : "")
+      + `Δf ${spec.df.toFixed(2)} Hz   ${spec.segments} × ${spec.n} samples at ${spec.fs.toFixed(0)} Hz`;
+  }
   function drawScope() {
     const css = getComputedStyle($("scope-card"));
     const blue = css.getPropertyValue("--scope-cmd").trim() || "#3b82f6", amber = css.getPropertyValue("--scope-meas").trim() || "#d95926", accent = css.getPropertyValue("--scope-err").trim() || "#6ea8fe";
@@ -631,6 +744,7 @@
     drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
     drawStrip($("scope-tau"), axis, [{ values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
     scope.shown = t.length;
+    if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err });
     drawReadout();
   }
   function drawReadout() {
