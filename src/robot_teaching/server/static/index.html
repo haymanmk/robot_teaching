@@ -70,8 +70,8 @@
       <label><input type="checkbox" id="pb-loop"> Loop</label>
       <label>Start from <select id="pb-start"></select></label>
     </div>
+    <h3 title="the torques playback adds to the MIT law's kp·error + kd·velocity-error term; a change ramps in over the gain fade time, during playback too. Hold and free drive always compensate gravity. The start-up state is feedforward.gravity / friction / inertia in teaching.yaml.">Feed-forward <span class="muted">(playback)</span></h3>
     <div class="row ff-row">
-      <label title="the torques playback adds to the MIT law's kp·error + kd·velocity-error term; a change ramps in over the gain fade time, during playback too. Hold and free drive always compensate gravity. The start-up state is feedforward.gravity / friction / inertia in teaching.yaml.">Feed-forward</label>
       <label title="g(q) of the URDF: the textbook PD + gravity-compensation controller"><input type="checkbox" id="ff-gravity"> gravity</label>
       <label title="Coulomb friction (friction.coulomb) with the sign of the commanded velocity"><input type="checkbox" id="ff-friction"> friction</label>
       <label title="inverse dynamics on the commanded motion: inertia_scale × (M(q)·q̈ + C(q,q̇)·q̇ + armature·q̈), clipped to max_torque"><input type="checkbox" id="ff-inertia"> inertia</label>

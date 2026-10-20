@@ -150,7 +150,7 @@ label.btn, a.btn { display: inline-flex; align-items: center; cursor: pointer; t
 .sw.meas.dashed { background: repeating-linear-gradient(90deg, var(--scope-meas) 0 3px, transparent 3px 5px); }
 .sw.err.dashed { background: repeating-linear-gradient(90deg, var(--scope-err) 0 3px, transparent 3px 5px); }
 .sw.ff.dashed { background: repeating-linear-gradient(90deg, var(--scope-ff) 0 3px, transparent 3px 5px); }
-.ff-row { gap: 10px; }
+.ff-row { gap: 14px; margin-top: 0; }
 #plot-offset { width: 76px; }
 #plot-summary { white-space: pre-wrap; }
 .strip-title .yzoom { margin-left: auto; }
