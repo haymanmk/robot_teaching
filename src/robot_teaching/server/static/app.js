@@ -383,6 +383,8 @@
   const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "", at: 0 };   // spectrum strip: settings and the last estimate
   const hidden = new Set();                                       // traces unticked in a legend (not kept across reloads)
   let errSig = "pos";                                             // the error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
+  const STRIP_IDS = { pos: "scope-pos", err: "scope-err", tau: "scope-tau", fft: "scope-fft" };
+  const heights = { pos: null, err: null, tau: null, fft: null };   // a strip's height set by dragging its bar (px), or null: the stylesheet's; kept in localStorage
   let scopeDrawPending = false;
 
   function buildScope() {
@@ -404,6 +406,12 @@
     document.querySelectorAll("#scope-card input[data-trace]").forEach((cb) => {
       cb.onchange = () => { if (cb.checked) hidden.delete(cb.dataset.trace); else hidden.add(cb.dataset.trace); cb.closest(".li").classList.toggle("off", !cb.checked); requestScopeDraw(); };
     });
+    try {
+      const saved = JSON.parse(localStorage.getItem("scopeHeights") || "{}");
+      for (const key of Object.keys(heights)) if (Number.isFinite(saved[key]) && saved[key] >= 60 && saved[key] <= 900) heights[key] = Math.round(saved[key]);
+    } catch (_) { /* storage blocked or garbage */ }
+    for (const key of Object.keys(STRIP_IDS)) scopeWireResize($(`${STRIP_IDS[key]}-resize`), key);
+    applyHeights();
     try { errSig = localStorage.getItem("scopeErrSignal") === "tau" ? "tau" : "pos"; } catch (_) { /* storage blocked */ }
     $("scope-err-signal").value = errSig;
     $("scope-err-signal").onchange = (ev) => { errSig = ev.target.value === "tau" ? "tau" : "pos"; try { localStorage.setItem("scopeErrSignal", errSig); } catch (_) { /* storage blocked */ } requestScopeDraw(); };
@@ -457,6 +465,30 @@
     $("scope-pause").classList.toggle("on", !!view.snap);
     $("scope-card").classList.toggle("paused", !!view.snap);
     requestScopeDraw();
+  }
+  // The bar under a strip: drag it to set the strip's height; a double-click restores the stylesheet's.
+  function applyHeights() {
+    for (const key of Object.keys(STRIP_IDS)) {
+      const cv = $(STRIP_IDS[key]), h = heights[key] ? `${heights[key]}px` : "";
+      if (cv.style.height !== h) cv.style.height = h;
+      $(`${STRIP_IDS[key]}-resize`).classList.toggle("on", !!heights[key]);
+    }
+  }
+  function saveHeights() {
+    try { localStorage.setItem("scopeHeights", JSON.stringify(heights)); } catch (_) { /* storage blocked */ }
+  }
+  function scopeWireResize(handle, key) {
+    let drag = null;
+    handle.addEventListener("pointerdown", (ev) => { drag = { y: ev.clientY, h: $(STRIP_IDS[key]).clientHeight }; handle.setPointerCapture(ev.pointerId); ev.preventDefault(); });
+    handle.addEventListener("pointermove", (ev) => {
+      if (!drag) return;
+      heights[key] = Math.round(Math.min(900, Math.max(60, drag.h + (ev.clientY - drag.y))));
+      applyHeights(); requestScopeDraw();
+    });
+    const release = () => { if (drag) { drag = null; saveHeights(); } };
+    handle.addEventListener("pointerup", release);
+    handle.addEventListener("pointercancel", release);
+    handle.addEventListener("dblclick", () => { heights[key] = null; saveHeights(); applyHeights(); requestScopeDraw(); });
   }
   function scopeWireCanvas(canvas) {
     // Paused: drag to look back in time. Any time: Ctrl/⌘ + wheel zooms (a plain wheel scrolls the page).

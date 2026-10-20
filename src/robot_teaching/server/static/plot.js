@@ -20,7 +20,8 @@
   const STRIPS = { pos: "plot-pos", err: "plot-err", tau: "plot-tau" };
   const yz = { pos: null, err: null, tau: null };       // a strip's value range [lo, hi], or null: fit the samples on screen
   const yBase = { pos: null, err: null, tau: null };    // the fitted span a strip had when its value zoom began
-  const yHeight = { pos: null, err: null, tau: null };  // a strip's height set by dragging its bar (px), or null: from the zoom
+  const yHeight = { pos: null, err: null, tau: null, fft: null };  // a strip's height set by dragging its bar (px), or null: from the zoom
+  const HEIGHT_IDS = Object.assign({ fft: "plot-fft" }, STRIPS);   // every strip with a bar (the spectrum has no value zoom)
   const STRIP_HEIGHT = 130;                             // px, a strip's height while its value axis is automatic
   const frames = { pos: null, err: null, tau: null };   // the mapping each strip was last drawn with (scopeDraw.drawStrip)
   let errSig = "pos";                      // the tracking-error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
@@ -166,9 +167,10 @@
     return Math.round(STRIP_HEIGHT * Math.min(3, Math.max(1, 1 + 0.5 * Math.log2(ratio))));
   }
   function applyHeights() {
-    for (const key of Object.keys(STRIPS)) {
-      const cv = $(STRIPS[key]), h = `${stripHeight(key)}px`;
+    for (const key of Object.keys(HEIGHT_IDS)) {
+      const cv = $(HEIGHT_IDS[key]), h = `${stripHeight(key)}px`;
       if (cv.style.height !== h) cv.style.height = h;
+      $(`${HEIGHT_IDS[key]}-resize`).classList.toggle("on", !!yHeight[key]);
     }
   }
   const yUnit = (key) => (key === "tau" || (key === "err" && errSig === "tau") ? " N·m" : "°");
@@ -177,7 +179,6 @@
       const r = yz[key];
       $(`${STRIPS[key]}-yspan`).textContent = r ? `${scopeDraw.fmtTick(r[1] - r[0])}${yUnit(key)} span` : "";
       $(`${STRIPS[key]}-yauto`).disabled = !r && !yHeight[key];
-      $(`${STRIPS[key]}-resize`).classList.toggle("on", !!yHeight[key]);
     }
   }
   function setErrSignal(v) {
@@ -240,7 +241,7 @@
   // The bar under a strip: drag it to set the strip's height; a double-click gives it back to the zoom rule.
   function wireResize(handle, key) {
     let drag = null;
-    handle.addEventListener("pointerdown", (ev) => { drag = { y: ev.clientY, h: $(STRIPS[key]).clientHeight }; handle.setPointerCapture(ev.pointerId); ev.preventDefault(); });
+    handle.addEventListener("pointerdown", (ev) => { drag = { y: ev.clientY, h: $(HEIGHT_IDS[key]).clientHeight }; handle.setPointerCapture(ev.pointerId); ev.preventDefault(); });
     handle.addEventListener("pointermove", (ev) => {
       if (!drag) return;
       yHeight[key] = Math.round(Math.min(900, Math.max(60, drag.h + (ev.clientY - drag.y))));
@@ -422,7 +423,6 @@
     $("plot-fft").addEventListener("wheel", (ev) => { if (!(ev.ctrlKey || ev.metaKey)) return; ev.preventDefault(); fftZoom(ev.deltaY > 0 ? +1 : -1); }, { passive: false });
     for (const key of Object.keys(STRIPS)) {
       wireStrip($(STRIPS[key]), key);
-      wireResize($(`${STRIPS[key]}-resize`), key);
       $(`${STRIPS[key]}-yin`).onclick = () => yZoom(key, 2);
       $(`${STRIPS[key]}-yout`).onclick = () => yZoom(key, 0.5);
       $(`${STRIPS[key]}-yauto`).onclick = () => yAuto(key);
@@ -433,6 +433,7 @@
     });
     try { setErrSignal(localStorage.getItem("plotErrSignal") || "pos"); } catch (_) { setErrSignal("pos"); }
     wireOverview($("plot-overview"));
+    for (const key of Object.keys(HEIGHT_IDS)) wireResize($(`${HEIGHT_IDS[key]}-resize`), key);
     try {
       fft.on = localStorage.getItem("plotFft") === "1";
       const sig = localStorage.getItem("plotFftSignal"), fm = Number(localStorage.getItem("plotFftFmax"));

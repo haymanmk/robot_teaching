@@ -144,7 +144,8 @@ commanded and measured position, their difference (or, with the strip's selector
 error: reported by the motor − commanded), and the torque the MIT law asks for next to the
 torque the motor reports and the feed-forward it contains. Pick the joint in its drop-down.
 Each legend entry has a checkbox: untick a trace to hide it for the moment, and the scale fits
-the traces left; a reload shows all of them again. It is the tool for telling
+the traces left; a reload shows all of them again. The bar under a strip can be dragged to set
+its height, which is kept across reloads; a double-click on the bar restores it. It is the tool for telling
 stick-slip (a sawtooth in the error at low speed) from bus trouble (gaps on every joint) from
 low damping (a 3–4 Hz ring on one joint). **−** / **+** (or Ctrl+wheel over a trace) zoom the
 window between 0.5 s and 60 s, the length of the history the server keeps. **Pause** freezes
