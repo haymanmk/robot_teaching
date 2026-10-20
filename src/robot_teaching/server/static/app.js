@@ -372,7 +372,7 @@
   const SCOPE_GAP = scopeDraw.GAP;                                // s without samples: lift the pen instead of bridging it
   const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i"];
   const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
-  const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m" };
+  const FFT_UNITS = { err: "°", tau_err: "N·m", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment (rounded to a power of two of samples)
   // errMax is the largest |measured − commanded| (°) over every sample received since the joint
   // was picked or "Reset max" was pressed, not only over the samples on screen; it survives a
@@ -382,6 +382,7 @@
   const rec = { on: false, rows: [], t: [], epoch: null, run: 1, started: 0, name: "", limit: 0 };   // recording: CSV rows plus each row's t
   const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "", at: 0 };   // spectrum strip: settings and the last estimate
   const hidden = new Set();                                       // traces unticked in a legend (not kept across reloads)
+  let errSig = "pos";                                             // the error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
   let scopeDrawPending = false;
 
   function buildScope() {
@@ -403,6 +404,9 @@
     document.querySelectorAll("#scope-card input[data-trace]").forEach((cb) => {
       cb.onchange = () => { if (cb.checked) hidden.delete(cb.dataset.trace); else hidden.add(cb.dataset.trace); cb.closest(".li").classList.toggle("off", !cb.checked); requestScopeDraw(); };
     });
+    try { errSig = localStorage.getItem("scopeErrSignal") === "tau" ? "tau" : "pos"; } catch (_) { /* storage blocked */ }
+    $("scope-err-signal").value = errSig;
+    $("scope-err-signal").onchange = (ev) => { errSig = ev.target.value === "tau" ? "tau" : "pos"; try { localStorage.setItem("scopeErrSignal", errSig); } catch (_) { /* storage blocked */ } requestScopeDraw(); };
     try {
       fft.on = localStorage.getItem("scopeFft") === "1";
       const sig = localStorage.getItem("scopeFftSignal"), fm = Number(localStorage.getItem("scopeFftFmax"));
@@ -579,7 +583,7 @@
     const key = `${scope.joint}|${fft.signal}|${scope.window}|${view.snap ? view.end : "live"}`;
     const now = performance.now();
     if (key !== fft.key || (!view.snap && now - fft.at >= 150)) {
-      const values = fft.signal === "err" ? series.err : fft.signal === "q" ? series.q : fft.signal === "q_cmd" ? series.qCmd : fft.signal === "tau_ff" ? series.ff : src[fft.signal].slice(i0, i1);
+      const values = fft.signal === "err" ? series.err : fft.signal === "tau_err" ? series.tauErr : fft.signal === "q" ? series.q : fft.signal === "q_cmd" ? series.qCmd : fft.signal === "tau_ff" ? series.ff : src[fft.signal].slice(i0, i1);
       fft.spec = window.scopeDSP ? scopeDSP.welch(values, t, { segmentSeconds: FFT_SEGMENT, maxSegments: 32, gap: SCOPE_GAP }) : null;
       fft.key = key; fft.at = now;
     }
@@ -599,15 +603,17 @@
     const qCmd = src.q_cmd.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
     const q = src.q.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
     const err = q.map((v, i) => (v === null || qCmd[i] === null ? null : v - qCmd[i]));
+    const tauErr = src.tau_meas.slice(i0, i1).map((v, i) => { const c = src.tau_cmd[i0 + i]; return v === null || c === null ? null : v - c; });
     // The feed-forward the commanded torque contains: the gravity, friction and inertia terms as applied.
     const ff = src.tau_g.slice(i0, i1).map((g, i) => { const f = src.tau_f[i0 + i], d = src.tau_i[i0 + i]; return g === null || f === null || d === null ? null : g + f + d; });
     const axis = { tEnd, W, t, absolute: !!view.snap };
     const shown = (list) => list.filter((s) => !hidden.has(s.key));
     scopeDraw.drawStrip($("scope-pos"), axis, shown([{ key: "q_cmd", values: qCmd, color: blue }, { key: "q", values: q, color: amber }]), { minSpan: 0.2 });
-    scopeDraw.drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
+    $("scope-err-units").textContent = errSig === "tau" ? "N·m reported − commanded" : "° measured − commanded";
+    scopeDraw.drawStrip($("scope-err"), axis, [{ values: errSig === "tau" ? tauErr : err, color: accent }], { symmetric: true, minSpan: errSig === "tau" ? 0.05 : 0.1 });
     scopeDraw.drawStrip($("scope-tau"), axis, shown([{ key: "tau_ff", values: ff, color: green }, { key: "tau_cmd", values: src.tau_cmd.slice(i0, i1), color: blue }, { key: "tau_meas", values: src.tau_meas.slice(i0, i1), color: amber }]), { symmetric: true, minSpan: 0.5 });
     scope.shown = t.length;
-    if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err, ff });
+    if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err, tauErr, ff });
     drawReadout();
   }
   function drawReadout() {

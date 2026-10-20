@@ -140,8 +140,9 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
    triggers the same graceful stop while the page has keyboard focus.
 
 **Scope.** The card at the bottom of the pendant shows one joint at the full control rate:
-commanded and measured position, their difference, and the torque the MIT law asks for next
-to the torque the motor reports and the feed-forward it contains. Pick the joint in its drop-down.
+commanded and measured position, their difference (or, with the strip's selector, the torque
+error: reported by the motor − commanded), and the torque the MIT law asks for next to the
+torque the motor reports and the feed-forward it contains. Pick the joint in its drop-down.
 Each legend entry has a checkbox: untick a trace to hide it for the moment, and the scale fits
 the traces left; a reload shows all of them again. It is the tool for telling
 stick-slip (a sawtooth in the error at low speed) from bus trouble (gaps on every joint) from
@@ -180,7 +181,8 @@ Ctrl+wheel or the − and + keys zoom between 100 ms and the whole run (**Fit**)
 a window, and hovering a trace reads the sample under the pointer. As in the live scope, a
 legend checkbox hides a trace for the moment, B's traces included. Each strip fits its value
 axis to the samples on screen until you zoom it: **−** / **+** / **Auto** at the right of its
-title, or Shift+wheel over the trace, after which a drag also moves it up and down. The
+title, or Shift+wheel over the trace, after which a drag also moves it up and down, and the
+strip grows taller with the magnification, up to three times its height. The
 tracking-error strip shows the position error (° measured − commanded) or the torque error
 (N·m reported by the motor − commanded by the MIT law), which the spectrum offers too. The
 torque strip also draws the feed-forward the command contains, and the spectrum offers its

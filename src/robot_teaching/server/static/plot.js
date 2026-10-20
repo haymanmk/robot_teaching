@@ -19,6 +19,8 @@
   const ov = { key: "", cache: null };     // the overview trace, cached per run and canvas size
   const STRIPS = { pos: "plot-pos", err: "plot-err", tau: "plot-tau" };
   const yz = { pos: null, err: null, tau: null };       // a strip's value range [lo, hi], or null: fit the samples on screen
+  const yBase = { pos: null, err: null, tau: null };    // the fitted span a strip had when its value zoom began
+  const STRIP_HEIGHT = 130;                             // px, a strip's height while its value axis is automatic
   const frames = { pos: null, err: null, tau: null };   // the mapping each strip was last drawn with (scopeDraw.drawStrip)
   let errSig = "pos";                      // the tracking-error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
   let cursorT = null;                      // the time under the pointer, or null
@@ -68,7 +70,7 @@
     cur = entries[id] || null;
     if (cur && cmp.id === cur.id) cmp.id = null;
     fft.key = fft.keyB = ""; ov.key = ""; cursorT = null;
-    for (const key of Object.keys(yz)) yz[key] = null;
+    for (const key of Object.keys(yz)) yz[key] = yBase[key] = null;
     rebuildSelects();
     showSummary();
     fit();
@@ -147,10 +149,25 @@
     const v = lo + (hi - lo) * (Number.isFinite(frac) ? Math.min(1, Math.max(0, frac)) : 0.5);
     const nlo = v - (v - lo) / factor, nhi = v + (hi - v) / factor;
     if (!(nhi - nlo > 1e-9) || nhi - nlo > 1e9) return;
+    if (!yz[key]) yBase[key] = hi - lo;
     yz[key] = [nlo, nhi];
     requestDraw();
   }
-  function yAuto(key) { yz[key] = null; requestDraw(); }
+  function yAuto(key) { yz[key] = yBase[key] = null; requestDraw(); }
+  // A zoomed strip grows with its magnification: 1.5× the height per halving of the fitted span,
+  // up to three times, so zooming in buys pixels and not only a narrower range.
+  function stripHeight(key) {
+    const r = yz[key], base = yBase[key];
+    if (!r || !base) return STRIP_HEIGHT;
+    const ratio = base / Math.max(1e-12, r[1] - r[0]);
+    return Math.round(STRIP_HEIGHT * Math.min(3, Math.max(1, 1 + 0.5 * Math.log2(ratio))));
+  }
+  function applyHeights() {
+    for (const key of Object.keys(STRIPS)) {
+      const cv = $(STRIPS[key]), h = `${stripHeight(key)}px`;
+      if (cv.style.height !== h) cv.style.height = h;
+    }
+  }
   const yUnit = (key) => (key === "tau" || (key === "err" && errSig === "tau") ? " N·m" : "°");
   function showYSpans() {
     for (const key of Object.keys(STRIPS)) {
@@ -163,7 +180,7 @@
     errSig = v === "tau" ? "tau" : "pos";
     $("plot-err-signal").value = errSig;
     $("plot-err-units").textContent = errSig === "tau" ? "N·m reported − commanded" : "° measured − commanded";
-    yz.err = null;
+    yz.err = yBase.err = null;
     try { localStorage.setItem("plotErrSignal", errSig); } catch (_) { /* storage blocked */ }
     requestDraw();
   }
@@ -276,6 +293,7 @@
     const css = getComputedStyle($("scope-card"));
     const blue = css.getPropertyValue("--scope-cmd").trim() || "#3b82f6", amber = css.getPropertyValue("--scope-meas").trim() || "#d95926", accent = css.getPropertyValue("--scope-err").trim() || "#6ea8fe";
     const green = css.getPropertyValue("--scope-ff").trim() || "#199e70";
+    applyHeights();
     $("plot-zoom-in").disabled = !cur || view.W <= ZOOMS[0] + 1e-9;
     $("plot-zoom-out").disabled = !cur || view.W >= runSpan() - 1e-9;
     $("plot-fit").disabled = !cur;
