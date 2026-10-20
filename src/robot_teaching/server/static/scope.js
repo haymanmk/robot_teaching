@@ -50,23 +50,30 @@
    * [{ values, color }]; a null or NaN value, or a step in `t` above `opts.gap` (default 0.25 s),
    * lifts the pen. A series may bring its own times (`t`, parallel to its values, plus `tOffset`
    * added to them: another recording overlaid on this axis) and its own look (`dash`, `alpha`,
-   * `width`). `opts`: symmetric (centre the scale on zero), minSpan (least value range), bare (no
-   * axes or grid, for an overview), cursor (a time: draw a vertical marker there).
+   * `width`). `opts`: symmetric (centre the scale on zero), minSpan (least value range), range
+   * ([lo, hi]: show exactly this value range instead of fitting the data), bare (no axes or grid,
+   * for an overview), cursor (a time: draw a vertical marker there). Returns the mapping used,
+   * { lo, hi, x0, x1, y0, y1 } (the value range on screen and the plot area in CSS px), or null
+   * when the canvas has no size.
    */
   function drawStrip(canvas, axis, series, opts) {
     const c = setupCanvas(canvas);
-    if (!c) return;
+    if (!c) return null;
     opts = opts || {};
     const { ctx, W: Wpx, H, lineColor, muted } = c;
     const { tEnd, W, t } = axis, gap = opts.gap === undefined ? GAP : opts.gap;
     const x0 = opts.bare ? 0 : PLOT_LEFT, x1 = Wpx - (opts.bare ? 0 : PLOT_RIGHT), y0 = opts.bare ? 2 : 6, y1 = H - (opts.bare ? 2 : 16);
     let lo = Infinity, hi = -Infinity;
-    for (const s of series) for (const v of s.values) if (!missing(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
-    if (!Number.isFinite(lo)) { lo = -1; hi = 1; }
-    const minSpan = opts.minSpan || 1e-6;
-    if (opts.symmetric) { const mx = Math.max(Math.abs(lo), Math.abs(hi), minSpan / 2); lo = -mx; hi = mx; }
-    if (hi - lo < minSpan) { const c = (hi + lo) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
-    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    if (opts.range && Number.isFinite(opts.range[0]) && Number.isFinite(opts.range[1]) && opts.range[1] > opts.range[0]) {
+      lo = opts.range[0]; hi = opts.range[1];
+    } else {
+      for (const s of series) for (const v of s.values) if (!missing(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+      if (!Number.isFinite(lo)) { lo = -1; hi = 1; }
+      const minSpan = opts.minSpan || 1e-6;
+      if (opts.symmetric) { const mx = Math.max(Math.abs(lo), Math.abs(hi), minSpan / 2); lo = -mx; hi = mx; }
+      if (hi - lo < minSpan) { const c = (hi + lo) / 2; lo = c - minSpan / 2; hi = c + minSpan / 2; }
+      const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    }
     const X = (tt) => x1 - (x1 - x0) * (tEnd - tt) / W;
     const Y = (v) => y1 - (y1 - y0) * (v - lo) / (hi - lo);
     if (!opts.bare) {
@@ -133,6 +140,7 @@
       ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); ctx.globalAlpha = 1;
     }
     ctx.restore();
+    return { lo, hi, x0, x1, y0, y1 };
   }
 
   const dB = (a) => 20 * Math.log10(Math.max(a, 1e-6));

@@ -38,6 +38,10 @@ function synth(seconds, run, opts) {
   check(s.samples === 1000 && close(s.rate, 500, 0.01) && s.gaps === 0 && s.missing === 0, `summary: ${s.samples} samples at ${s.rate.toFixed(1)} Hz, ${s.gaps} holes`);
   check(close(s.errMax, 0.01 * 180 / Math.PI, 1e-3) && close(s.errRms, 0.01 * 180 / Math.PI / Math.SQRT2, 2e-3), `max |error| ${s.errMax.toFixed(4)}° (0.5730), rms ${s.errRms.toFixed(4)}° (0.4052)`);
   check(close(s.tauMax, 1.5, 1e-3), `peak |torque| ${s.tauMax.toFixed(3)} N·m`);
+  // The torque error: reported 1.4·cos t against commanded 1.5·cos t, so −0.1·cos t; over 2 s its
+  // mean square is 0.01·(1/2 + sin 4 / 8).
+  const rmsExpected = 0.1 * Math.sqrt(0.5 + Math.sin(4) / 8);
+  check(close(run.tau_err[0], -0.1, 1e-3) && close(s.tauErrMax, 0.1, 1e-3) && close(s.tauErrAt, 0) && close(s.tauErrRms, rmsExpected, 1e-3), `torque error: max ${s.tauErrMax.toFixed(3)} N·m at ${s.tauErrAt} s, rms ${s.tauErrRms.toFixed(4)} (${rmsExpected.toFixed(4)})`);
 }
 
 // 2. Empty cells read as NaN (and are counted), CRLF line ends and a file without a trailing newline.
@@ -46,7 +50,8 @@ function synth(seconds, run, opts) {
   const r = rec.parse(text);
   const run = r.runs[0];
   check(r.rows === 500 && Number.isNaN(run.q[10]) && Number.isNaN(run.err_deg[10]) && Number.isFinite(run.q_cmd[10]), "an empty measurement is NaN; the command beside it is kept");
-  check(Number.isNaN(run.tau_meas[20]) && Number.isFinite(run.tau_cmd[20]), "an empty motor torque is NaN");
+  check(Number.isNaN(run.tau_meas[20]) && Number.isFinite(run.tau_cmd[20]) && Number.isNaN(run.tau_err[20]), "an empty motor torque is NaN, and so is the torque error there");
+  check(rec.summarize(run, 15, 25).samples === 10 && Number.isFinite(rec.summarize(run, 15, 25).tauErrRms), "the torque error statistics skip the row without a reported torque");
   check(close(run.t[499], 0.998) && Number.isFinite(run.q[499]), "CRLF and no final newline: the last row is read");
   check(rec.summarize(run).missing === 1, "the row without a measurement is counted");
 }

@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const ZOOMS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 60, 120, 300, 600, 1800, 3600];   // s, the zoom steps (Fit goes beyond)
   const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
-  const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m" };
+  const FFT_UNITS = { err: "°", tau_err: "N·m", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment, as in the live scope
   const GAP = scopeDraw.GAP;
   const DASH = [4, 3], B_ALPHA = 0.7;                            // the comparison recording: dashed, a little lighter, the same hues
@@ -17,6 +17,10 @@
   const view = { W: 5, tEnd: 0 };          // the window (s) and the time at its right edge, in the run's clock
   const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "", specB: null, keyB: "" };
   const ov = { key: "", cache: null };     // the overview trace, cached per run and canvas size
+  const STRIPS = { pos: "plot-pos", err: "plot-err", tau: "plot-tau" };
+  const yz = { pos: null, err: null, tau: null };       // a strip's value range [lo, hi], or null: fit the samples on screen
+  const frames = { pos: null, err: null, tau: null };   // the mapping each strip was last drawn with (scopeDraw.drawStrip)
+  let errSig = "pos";                      // the tracking-error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
   let cursorT = null;                      // the time under the pointer, or null
   let drawPending = false;
 
@@ -63,6 +67,7 @@
     cur = entries[id] || null;
     if (cur && cmp.id === cur.id) cmp.id = null;
     fft.key = fft.keyB = ""; ov.key = ""; cursorT = null;
+    for (const key of Object.keys(yz)) yz[key] = null;
     rebuildSelects();
     showSummary();
     fit();
@@ -131,27 +136,65 @@
     if (W === undefined || W === view.W) return;
     setWindow(W, about);
   }
+  // ── the value axes ──
+  // Zoom a strip's value range by `factor` (above 1: in) about the value at `frac` of the plot
+  // height from the bottom (default: the middle); from the fitted range when it was automatic.
+  function yZoom(key, factor, frac) {
+    const f = frames[key];
+    if (!f) return;
+    const [lo, hi] = yz[key] || [f.lo, f.hi];
+    const v = lo + (hi - lo) * (Number.isFinite(frac) ? Math.min(1, Math.max(0, frac)) : 0.5);
+    const nlo = v - (v - lo) / factor, nhi = v + (hi - v) / factor;
+    if (!(nhi - nlo > 1e-9) || nhi - nlo > 1e9) return;
+    yz[key] = [nlo, nhi];
+    requestDraw();
+  }
+  function yAuto(key) { yz[key] = null; requestDraw(); }
+  const yUnit = (key) => (key === "tau" || (key === "err" && errSig === "tau") ? " N·m" : "°");
+  function showYSpans() {
+    for (const key of Object.keys(STRIPS)) {
+      const r = yz[key];
+      $(`${STRIPS[key]}-yspan`).textContent = r ? `${scopeDraw.fmtTick(r[1] - r[0])}${yUnit(key)} span` : "";
+      $(`${STRIPS[key]}-yauto`).disabled = !r;
+    }
+  }
+  function setErrSignal(v) {
+    errSig = v === "tau" ? "tau" : "pos";
+    $("plot-err-signal").value = errSig;
+    $("plot-err-units").textContent = errSig === "tau" ? "N·m reported − commanded" : "° measured − commanded";
+    yz.err = null;
+    try { localStorage.setItem("plotErrSignal", errSig); } catch (_) { /* storage blocked */ }
+    requestDraw();
+  }
   // Time under the pointer on a strip (the plot area spans PLOT_LEFT … width − PLOT_RIGHT).
   function timeAt(canvas, x) {
     const x0 = scopeDraw.PLOT_LEFT, x1 = canvas.clientWidth - scopeDraw.PLOT_RIGHT;
     return view.tEnd - view.W * (x1 - x) / Math.max(1, x1 - x0);
   }
-  function wireStrip(canvas) {
+  function wireStrip(canvas, key) {
     let drag = null;
     canvas.addEventListener("pointerdown", (ev) => {
       if (!cur) return;
-      // A plain drag moves the window; with Shift (and a comparison on screen) it slides B instead.
-      drag = { x: ev.clientX, end: view.tEnd, offset: cmp.offset, shift: !!(ev.shiftKey && cmpEntry()), px: Math.max(1, canvas.clientWidth - scopeDraw.PLOT_LEFT - scopeDraw.PLOT_RIGHT), moved: false };
+      // A plain drag moves the window (and, on a zoomed value axis, the range); with Shift (and a
+      // comparison on screen) it slides B instead.
+      drag = { x: ev.clientX, y: ev.clientY, end: view.tEnd, offset: cmp.offset, shift: !!(ev.shiftKey && cmpEntry()), range: yz[key] ? yz[key].slice() : null,
+        px: Math.max(1, canvas.clientWidth - scopeDraw.PLOT_LEFT - scopeDraw.PLOT_RIGHT), moved: false };
       canvas.setPointerCapture(ev.pointerId);
     });
     canvas.addEventListener("pointermove", (ev) => {
       if (!cur) return;
       if (drag) {
-        if (Math.abs(ev.clientX - drag.x) > 2) drag.moved = true;
+        if (Math.abs(ev.clientX - drag.x) > 2 || Math.abs(ev.clientY - drag.y) > 2) drag.moved = true;
         if (drag.moved) {
           cursorT = null;
           const dt = (ev.clientX - drag.x) / drag.px * view.W;
-          if (drag.shift) setOffset(drag.offset + dt); else setEnd(drag.end - dt);
+          if (drag.shift) { setOffset(drag.offset + dt); return; }
+          const f = frames[key];
+          if (drag.range && f) {                                  // the trace follows the pointer up and down too
+            const dv = (ev.clientY - drag.y) / Math.max(1, f.y1 - f.y0) * (drag.range[1] - drag.range[0]);
+            yz[key] = [drag.range[0] + dv, drag.range[1] + dv];
+          }
+          setEnd(drag.end - dt);
           return;
         }
       }
@@ -163,9 +206,13 @@
     canvas.addEventListener("pointercancel", release);
     canvas.addEventListener("pointerleave", () => { if (cursorT !== null) { cursorT = null; requestDraw(); } });
     canvas.addEventListener("wheel", (ev) => {
-      if (!(ev.ctrlKey || ev.metaKey)) return;                    // a plain wheel scrolls the page
-      ev.preventDefault();
-      zoom(ev.deltaY > 0 ? +1 : -1, timeAt(canvas, ev.offsetX));
+      const d = ev.deltaY || ev.deltaX;                           // with Shift some browsers report the wheel as horizontal
+      if (ev.ctrlKey || ev.metaKey) { ev.preventDefault(); zoom(d > 0 ? +1 : -1, timeAt(canvas, ev.offsetX)); }
+      else if (ev.shiftKey) {
+        ev.preventDefault();
+        const f = frames[key];
+        yZoom(key, d > 0 ? 1 / 1.5 : 1.5, f ? (f.y1 - ev.offsetY) / Math.max(1, f.y1 - f.y0) : 0.5);
+      }                                                           // a plain wheel scrolls the page
     }, { passive: false });
   }
   function wireOverview(canvas) {
@@ -233,6 +280,8 @@
     if (!cur) {
       $("plot-window").textContent = "no file";
       ["plot-overview", "plot-pos", "plot-err", "plot-tau"].forEach((id) => drawEmpty($(id), "open a recording"));
+      for (const key of Object.keys(frames)) frames[key] = null;
+      showYSpans();
       if (fft.on) $("plot-fft-readout").textContent = scopeDraw.drawSpectrumStrip($("plot-fft"), null, { empty: "open a recording" });
       $("plot-readout").textContent = "";
       return;
@@ -254,9 +303,11 @@
       bs = { rb, j0, j1, sh, t: rb.t.subarray(j0, j1) };
     }
     const bSeries = (col, color) => (bs ? [{ values: bs.rb[col].subarray(bs.j0, bs.j1), color, t: bs.t, tOffset: bs.sh, dash: DASH, alpha: B_ALPHA }] : []);
-    scopeDraw.drawStrip($("plot-pos"), axis, bSeries("q_cmd_deg", blue).concat(bSeries("q_deg", amber), [{ values: run.q_cmd_deg.subarray(i0, i1), color: blue }, { values: run.q_deg.subarray(i0, i1), color: amber }]), { minSpan: 0.2, cursor: cursorT });
-    scopeDraw.drawStrip($("plot-err"), axis, bSeries("err_deg", accent).concat([{ values: run.err_deg.subarray(i0, i1), color: accent }]), { symmetric: true, minSpan: 0.1, cursor: cursorT });
-    scopeDraw.drawStrip($("plot-tau"), axis, bSeries("tau_cmd", blue).concat(bSeries("tau_meas", amber), [{ values: run.tau_cmd.subarray(i0, i1), color: blue }, { values: run.tau_meas.subarray(i0, i1), color: amber }]), { symmetric: true, minSpan: 0.5, cursor: cursorT });
+    const errCol = errSig === "tau" ? "tau_err" : "err_deg";
+    frames.pos = scopeDraw.drawStrip($("plot-pos"), axis, bSeries("q_cmd_deg", blue).concat(bSeries("q_deg", amber), [{ values: run.q_cmd_deg.subarray(i0, i1), color: blue }, { values: run.q_deg.subarray(i0, i1), color: amber }]), { minSpan: 0.2, cursor: cursorT, range: yz.pos });
+    frames.err = scopeDraw.drawStrip($("plot-err"), axis, bSeries(errCol, accent).concat([{ values: run[errCol].subarray(i0, i1), color: accent }]), { symmetric: true, minSpan: errSig === "tau" ? 0.05 : 0.1, cursor: cursorT, range: yz.err });
+    frames.tau = scopeDraw.drawStrip($("plot-tau"), axis, bSeries("tau_cmd", blue).concat(bSeries("tau_meas", amber), [{ values: run.tau_cmd.subarray(i0, i1), color: blue }, { values: run.tau_meas.subarray(i0, i1), color: amber }]), { symmetric: true, minSpan: 0.5, cursor: cursorT, range: yz.tau });
+    showYSpans();
     drawOverview(accent);
     if (fft.on) drawSpectrum(run, i0, i1, t, accent, bs);
     drawReadout(run, i0, i1, bs);
@@ -295,11 +346,12 @@
       if (!r.t.length || Math.abs(r.t[i] - tc) > GAP) return `${tag}no sample here`;
       const tm = r.tau_meas[i];
       return `${tag}t ${r.t[i].toFixed(4)} s   commanded ${fmt(r.q_cmd_deg[i], 3)}°   measured ${fmt(r.q_deg[i], 3)}°   error ${fmt(r.err_deg[i], 3)}°   torque ${fmt(r.tau_cmd[i], 3)} N·m`
-        + (Number.isFinite(tm) ? ` (motor ${fmt(tm, 3)})` : "");
+        + (Number.isFinite(tm) ? ` (motor ${fmt(tm, 3)}, error ${fmt(r.tau_err[i], 3)})` : "");
     };
     const statsLine = (r, a, b, tag) => {
       const s = scopeRecord.summarize(r, a, b);
       return `${tag}${fmtN(s.samples)} sample${s.samples === 1 ? "" : "s"} on screen   max |error| ${fmt(s.errMax, 3)}° at ${fmt(s.errMaxAt, 2)} s   rms ${fmt(s.errRms, 3)}°   peak |torque| ${fmt(s.tauMax, 2)} N·m`
+        + (errSig === "tau" ? `   max |torque error| ${fmt(s.tauErrMax, 3)} N·m at ${fmt(s.tauErrAt, 2)} s   rms ${fmt(s.tauErrRms, 3)} N·m` : "")
         + (s.gaps ? `   ${s.gaps} hole${s.gaps === 1 ? "" : "s"}` : "") + (s.missing ? `   ${fmtN(s.missing)} without a measurement` : "");
     };
     const tagA = bs ? "A  " : "";
@@ -325,7 +377,14 @@
     $("plot-fft-zoom-in").onclick = () => fftZoom(-1);
     $("plot-fft-zoom-out").onclick = () => fftZoom(+1);
     $("plot-fft").addEventListener("wheel", (ev) => { if (!(ev.ctrlKey || ev.metaKey)) return; ev.preventDefault(); fftZoom(ev.deltaY > 0 ? +1 : -1); }, { passive: false });
-    ["plot-pos", "plot-err", "plot-tau"].forEach((id) => wireStrip($(id)));
+    for (const key of Object.keys(STRIPS)) {
+      wireStrip($(STRIPS[key]), key);
+      $(`${STRIPS[key]}-yin`).onclick = () => yZoom(key, 2);
+      $(`${STRIPS[key]}-yout`).onclick = () => yZoom(key, 0.5);
+      $(`${STRIPS[key]}-yauto`).onclick = () => yAuto(key);
+    }
+    $("plot-err-signal").onchange = (ev) => setErrSignal(ev.target.value);
+    try { setErrSignal(localStorage.getItem("plotErrSignal") || "pos"); } catch (_) { setErrSignal("pos"); }
     wireOverview($("plot-overview"));
     try {
       fft.on = localStorage.getItem("plotFft") === "1";

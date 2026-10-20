@@ -18,8 +18,9 @@
    * An empty cell (a sample without a measurement) reads as NaN. The rows are split into runs:
    * a new run starts where the `run` column changes or where `t_s` steps backwards (a server
    * restart; its clock starts again from zero). Returns { joint, rows, runs, problems }; each run
-   * is { run, t, q_cmd, q, tau_cmd, tau_meas, q_cmd_deg, q_deg, err_deg } with Float64Array
-   * columns, the last three in degrees for the display.
+   * is { run, t, q_cmd, q, tau_cmd, tau_meas, q_cmd_deg, q_deg, err_deg, tau_err } with
+   * Float64Array columns: the positions again in degrees for the display, the tracking error
+   * (measured − commanded) in degrees and the torque tracking error (reported − commanded) in N·m.
    */
   function parse(text) {
     const problems = [];
@@ -86,10 +87,12 @@
         r.q_cmd_deg = new Float64Array(i - start);
         r.q_deg = new Float64Array(i - start);
         r.err_deg = new Float64Array(i - start);
+        r.tau_err = new Float64Array(i - start);
         for (let k = 0; k < i - start; k++) {
           r.q_cmd_deg[k] = r.q_cmd[k] * DEG;
           r.q_deg[k] = r.q[k] * DEG;
           r.err_deg[k] = (r.q[k] - r.q_cmd[k]) * DEG;                       // NaN when either is missing
+          r.tau_err[k] = r.tau_meas[k] - r.tau_cmd[k];
         }
         runs.push(r);
         start = i;
@@ -101,27 +104,31 @@
   /**
    * Statistics of the samples [i0, i1) of a run (default: all of it): count, time span, mean
    * sample rate (over the steps below `gap`), holes (steps above `gap`), rows without a
-   * measurement, the largest |error| in degrees and where it is, the RMS error and the largest
-   * |commanded torque|.
+   * measurement, the largest |error| in degrees and where it is, the RMS error, the largest
+   * |commanded torque|, and the largest |torque error| (reported − commanded, N·m), where it is
+   * and its RMS over the rows that have a reported torque.
    */
   function summarize(run, i0, i1, gap) {
     i0 = i0 === undefined ? 0 : Math.max(0, i0);
     i1 = i1 === undefined ? run.t.length : Math.min(run.t.length, i1);
     gap = gap === undefined ? GAP : gap;
-    const out = { samples: Math.max(0, i1 - i0), t0: NaN, t1: NaN, duration: 0, rate: NaN, gaps: 0, missing: 0, errMax: NaN, errMaxAt: NaN, errRms: NaN, tauMax: NaN };
+    const out = { samples: Math.max(0, i1 - i0), t0: NaN, t1: NaN, duration: 0, rate: NaN, gaps: 0, missing: 0, errMax: NaN, errMaxAt: NaN, errRms: NaN, tauMax: NaN, tauErrMax: NaN, tauErrAt: NaN, tauErrRms: NaN };
     if (i1 <= i0) return out;
     out.t0 = run.t[i0]; out.t1 = run.t[i1 - 1]; out.duration = out.t1 - out.t0;
-    let dsum = 0, dcount = 0, esum = 0, ecount = 0, emax = -1, eat = NaN, tmax = -1;
+    let dsum = 0, dcount = 0, esum = 0, ecount = 0, emax = -1, eat = NaN, tmax = -1, tesum = 0, tecount = 0, temax = -1, teat = NaN;
     for (let i = i0; i < i1; i++) {
       if (i > i0) { const d = run.t[i] - run.t[i - 1]; if (d > gap) out.gaps++; else if (d > 0) { dsum += d; dcount++; } }
       const e = run.err_deg[i];
       if (Number.isFinite(e)) { esum += e * e; ecount++; if (Math.abs(e) > emax) { emax = Math.abs(e); eat = run.t[i]; } } else out.missing++;
       const tau = run.tau_cmd[i];
       if (Number.isFinite(tau) && Math.abs(tau) > tmax) tmax = Math.abs(tau);
+      const te = run.tau_err[i];
+      if (Number.isFinite(te)) { tesum += te * te; tecount++; if (Math.abs(te) > temax) { temax = Math.abs(te); teat = run.t[i]; } }
     }
     if (dcount) out.rate = dcount / dsum;
     if (ecount) { out.errMax = emax; out.errMaxAt = eat; out.errRms = Math.sqrt(esum / ecount); }
     if (tmax >= 0) out.tauMax = tmax;
+    if (tecount) { out.tauErrMax = temax; out.tauErrAt = teat; out.tauErrRms = Math.sqrt(tesum / tecount); }
     return out;
   }
 

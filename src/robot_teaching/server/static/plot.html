@@ -43,24 +43,35 @@
     <div class="strip">
       <div class="strip-title">Position <span class="muted">°</span>
         <span class="lg"><i class="sw cmd"></i>commanded <i class="sw meas"></i>measured</span>
-        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B measured</span></div>
+        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B measured</span>
+        <span class="seg scope-zoom yzoom" aria-label="value zoom"><button id="plot-pos-yout" title="zoom out the value axis (Shift+wheel over the trace also zooms it; once zoomed, a drag also moves it up and down)">−</button><button id="plot-pos-yin" title="zoom in the value axis">+</button><button id="plot-pos-yauto" title="fit the value axis to the samples on screen again" disabled>Auto</button></span>
+        <span class="kv" id="plot-pos-yspan"></span></div>
       <canvas id="plot-pos" class="pan"></canvas>
     </div>
     <div class="strip">
-      <div class="strip-title">Tracking error <span class="muted">° measured − commanded</span>
-        <span class="lg lg-b hidden"><i class="sw err"></i>A <i class="sw err dashed"></i>B</span></div>
+      <div class="strip-title">Tracking error <span class="muted" id="plot-err-units">° measured − commanded</span>
+        <label class="muted">of <select id="plot-err-signal" aria-label="error signal" title="the position error (measured − commanded, °) or the torque error (reported by the motor − commanded by the MIT law, N·m)">
+          <option value="pos">position</option>
+          <option value="tau">torque</option>
+        </select></label>
+        <span class="lg lg-b hidden"><i class="sw err"></i>A <i class="sw err dashed"></i>B</span>
+        <span class="seg scope-zoom yzoom" aria-label="value zoom"><button id="plot-err-yout" title="zoom out the value axis (Shift+wheel over the trace also zooms it; once zoomed, a drag also moves it up and down)">−</button><button id="plot-err-yin" title="zoom in the value axis">+</button><button id="plot-err-yauto" title="fit the value axis to the samples on screen again" disabled>Auto</button></span>
+        <span class="kv" id="plot-err-yspan"></span></div>
       <canvas id="plot-err" class="pan"></canvas>
     </div>
     <div class="strip">
       <div class="strip-title">Torque <span class="muted">N·m</span>
         <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span>
-        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B reported</span></div>
+        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B reported</span>
+        <span class="seg scope-zoom yzoom" aria-label="value zoom"><button id="plot-tau-yout" title="zoom out the value axis (Shift+wheel over the trace also zooms it; once zoomed, a drag also moves it up and down)">−</button><button id="plot-tau-yin" title="zoom in the value axis">+</button><button id="plot-tau-yauto" title="fit the value axis to the samples on screen again" disabled>Auto</button></span>
+        <span class="kv" id="plot-tau-yspan"></span></div>
       <canvas id="plot-tau" class="pan"></canvas>
     </div>
     <div class="strip hidden" id="plot-fft-strip">
       <div class="strip-title">Spectrum <span class="muted" id="plot-fft-units">amplitude, dB re 1°</span>
         <label class="muted">of <select id="plot-fft-signal" aria-label="signal">
           <option value="err">tracking error</option>
+          <option value="tau_err">torque error</option>
           <option value="q">measured position</option>
           <option value="q_cmd">commanded position</option>
           <option value="tau_cmd">commanded torque</option>
@@ -77,7 +88,7 @@
     </div>
   </div>
   <div class="kv readout" id="plot-readout"></div>
-  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. <b>Compare</b> overlays a second recording, B, dashed on the same axes with its start on the start of A; <b>offset</b> or Shift+drag on a trace slides B in time, and the readouts, the hover values and the spectrum then show A and B together. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
+  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. Each strip fits its value axis to the samples on screen until you zoom it: <b>−</b>/<b>+</b>/<b>Auto</b> at the right of its title or Shift+wheel over the trace, after which a drag also moves it up and down. The tracking-error strip shows the <i>position</i> error or the <i>torque</i> error (reported by the motor − commanded). <b>Compare</b> overlays a second recording, B, dashed on the same axes with its start on the start of A; <b>offset</b> or Shift+drag on a trace slides B in time, and the readouts, the hover values and the spectrum then show A and B together. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
 </section>
 
 <script src="dsp.js"></script>

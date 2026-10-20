@@ -173,7 +173,12 @@ holds more than one *run* (the `run` column changes and `t_s` starts again from 
 run is listed on its own. The strip at the top shows the whole run's tracking error with the
 window outlined: click or drag it to jump, drag a trace to move through time, **−** / **+**,
 Ctrl+wheel or the − and + keys zoom between 100 ms and the whole run (**Fit**), ← → move by half
-a window, and hovering a trace reads the sample under the pointer. **Compare** overlays a second
+a window, and hovering a trace reads the sample under the pointer. Each strip fits its value
+axis to the samples on screen until you zoom it: **−** / **+** / **Auto** at the right of its
+title, or Shift+wheel over the trace, after which a drag also moves it up and down. The
+tracking-error strip shows the position error (° measured − commanded) or the torque error
+(N·m reported by the motor − commanded by the MIT law), which the spectrum offers too.
+**Compare** overlays a second
 recording, B, on the same axes, dashed and a little lighter, with its start on the start of the
 first run; **offset** (or Shift+drag on a trace) slides B in time and **Align starts** puts it
 back, so a move recorded before and after a gain change can be laid over itself. The summary

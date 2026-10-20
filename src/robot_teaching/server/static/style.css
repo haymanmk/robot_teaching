@@ -150,3 +150,5 @@ label.btn, a.btn { display: inline-flex; align-items: center; cursor: pointer; t
 .sw.err.dashed { background: repeating-linear-gradient(90deg, var(--scope-err) 0 3px, transparent 3px 5px); }
 #plot-offset { width: 76px; }
 #plot-summary { white-space: pre-wrap; }
+.strip-title .yzoom { margin-left: auto; }
+.strip-title .yzoom button:last-child { font-size: 12px; }
