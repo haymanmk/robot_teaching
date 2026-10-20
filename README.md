@@ -182,7 +182,8 @@ a window, and hovering a trace reads the sample under the pointer. As in the liv
 legend checkbox hides a trace for the moment, B's traces included. Each strip fits its value
 axis to the samples on screen until you zoom it: **−** / **+** / **Auto** at the right of its
 title, or Shift+wheel over the trace, after which a drag also moves it up and down, and the
-strip grows taller with the magnification, up to three times its height. The
+strip grows taller with the magnification, up to three times its height; the bar under a strip
+can be dragged to set its height by hand instead, until **Auto** restores it. The
 tracking-error strip shows the position error (° measured − commanded) or the torque error
 (N·m reported by the motor − commanded by the MIT law), which the spectrum offers too. The
 torque strip also draws the feed-forward the command contains, and the spectrum offers its

@@ -20,6 +20,7 @@
   const STRIPS = { pos: "plot-pos", err: "plot-err", tau: "plot-tau" };
   const yz = { pos: null, err: null, tau: null };       // a strip's value range [lo, hi], or null: fit the samples on screen
   const yBase = { pos: null, err: null, tau: null };    // the fitted span a strip had when its value zoom began
+  const yHeight = { pos: null, err: null, tau: null };  // a strip's height set by dragging its bar (px), or null: from the zoom
   const STRIP_HEIGHT = 130;                             // px, a strip's height while its value axis is automatic
   const frames = { pos: null, err: null, tau: null };   // the mapping each strip was last drawn with (scopeDraw.drawStrip)
   let errSig = "pos";                      // the tracking-error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
@@ -153,10 +154,12 @@
     yz[key] = [nlo, nhi];
     requestDraw();
   }
-  function yAuto(key) { yz[key] = yBase[key] = null; requestDraw(); }
+  function yAuto(key) { yz[key] = yBase[key] = yHeight[key] = null; requestDraw(); }
   // A zoomed strip grows with its magnification: 1.5× the height per halving of the fitted span,
-  // up to three times, so zooming in buys pixels and not only a narrower range.
+  // up to three times, so zooming in buys pixels and not only a narrower range. A height set by
+  // hand (the bar under the strip) wins until Auto.
   function stripHeight(key) {
+    if (yHeight[key]) return yHeight[key];
     const r = yz[key], base = yBase[key];
     if (!r || !base) return STRIP_HEIGHT;
     const ratio = base / Math.max(1e-12, r[1] - r[0]);
@@ -173,7 +176,8 @@
     for (const key of Object.keys(STRIPS)) {
       const r = yz[key];
       $(`${STRIPS[key]}-yspan`).textContent = r ? `${scopeDraw.fmtTick(r[1] - r[0])}${yUnit(key)} span` : "";
-      $(`${STRIPS[key]}-yauto`).disabled = !r;
+      $(`${STRIPS[key]}-yauto`).disabled = !r && !yHeight[key];
+      $(`${STRIPS[key]}-resize`).classList.toggle("on", !!yHeight[key]);
     }
   }
   function setErrSignal(v) {
@@ -232,6 +236,20 @@
         yZoom(key, d > 0 ? 1 / 1.5 : 1.5, f ? (f.y1 - ev.offsetY) / Math.max(1, f.y1 - f.y0) : 0.5);
       }                                                           // a plain wheel scrolls the page
     }, { passive: false });
+  }
+  // The bar under a strip: drag it to set the strip's height; a double-click gives it back to the zoom rule.
+  function wireResize(handle, key) {
+    let drag = null;
+    handle.addEventListener("pointerdown", (ev) => { drag = { y: ev.clientY, h: $(STRIPS[key]).clientHeight }; handle.setPointerCapture(ev.pointerId); ev.preventDefault(); });
+    handle.addEventListener("pointermove", (ev) => {
+      if (!drag) return;
+      yHeight[key] = Math.round(Math.min(900, Math.max(60, drag.h + (ev.clientY - drag.y))));
+      requestDraw();
+    });
+    const release = () => { drag = null; };
+    handle.addEventListener("pointerup", release);
+    handle.addEventListener("pointercancel", release);
+    handle.addEventListener("dblclick", () => { yHeight[key] = null; requestDraw(); });
   }
   function wireOverview(canvas) {
     let down = false;
@@ -404,6 +422,7 @@
     $("plot-fft").addEventListener("wheel", (ev) => { if (!(ev.ctrlKey || ev.metaKey)) return; ev.preventDefault(); fftZoom(ev.deltaY > 0 ? +1 : -1); }, { passive: false });
     for (const key of Object.keys(STRIPS)) {
       wireStrip($(STRIPS[key]), key);
+      wireResize($(`${STRIPS[key]}-resize`), key);
       $(`${STRIPS[key]}-yin`).onclick = () => yZoom(key, 2);
       $(`${STRIPS[key]}-yout`).onclick = () => yZoom(key, 0.5);
       $(`${STRIPS[key]}-yauto`).onclick = () => yAuto(key);

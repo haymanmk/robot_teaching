@@ -159,3 +159,7 @@ label.btn, a.btn { display: inline-flex; align-items: center; cursor: pointer; t
 #plot-summary { white-space: pre-wrap; }
 .strip-title .yzoom { margin-left: auto; }
 .strip-title .yzoom button:last-child { font-size: 12px; }
+/* The bar under a plotter strip: drag it to set the strip's height by hand. */
+.strip .resize { height: 6px; margin-top: 3px; border-radius: 3px; background: var(--line); cursor: ns-resize; touch-action: none; }
+.strip .resize:hover, .strip .resize.on { background: #3a4152; }
+.strip .resize.on { box-shadow: inset 0 0 0 1px var(--accent); }
