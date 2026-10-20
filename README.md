@@ -141,7 +141,9 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
 
 **Scope.** The card at the bottom of the pendant shows one joint at the full control rate:
 commanded and measured position, their difference, and the torque the MIT law asks for next
-to the torque the motor reports and the feed-forward it contains. Pick the joint in its drop-down. It is the tool for telling
+to the torque the motor reports and the feed-forward it contains. Pick the joint in its drop-down.
+Each legend entry has a checkbox: untick a trace to hide it for the moment, and the scale fits
+the traces left; a reload shows all of them again. It is the tool for telling
 stick-slip (a sawtooth in the error at low speed) from bus trouble (gaps on every joint) from
 low damping (a 3–4 Hz ring on one joint). **−** / **+** (or Ctrl+wheel over a trace) zoom the
 window between 0.5 s and 60 s, the length of the history the server keeps. **Pause** freezes
@@ -175,7 +177,8 @@ holds more than one *run* (the `run` column changes and `t_s` starts again from 
 run is listed on its own. The strip at the top shows the whole run's tracking error with the
 window outlined: click or drag it to jump, drag a trace to move through time, **−** / **+**,
 Ctrl+wheel or the − and + keys zoom between 100 ms and the whole run (**Fit**), ← → move by half
-a window, and hovering a trace reads the sample under the pointer. Each strip fits its value
+a window, and hovering a trace reads the sample under the pointer. As in the live scope, a
+legend checkbox hides a trace for the moment, B's traces included. Each strip fits its value
 axis to the samples on screen until you zoom it: **−** / **+** / **Auto** at the right of its
 title, or Shift+wheel over the trace, after which a drag also moves it up and down. The
 tracking-error strip shows the position error (° measured − commanded) or the torque error

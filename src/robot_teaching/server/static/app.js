@@ -381,6 +381,7 @@
   const view = { snap: null, end: 0 };                            // paused: the frozen samples and the time at the right edge
   const rec = { on: false, rows: [], t: [], epoch: null, run: 1, started: 0, name: "", limit: 0 };   // recording: CSV rows plus each row's t
   const fft = { on: false, signal: "err", fmax: 50, spec: null, key: "", at: 0 };   // spectrum strip: settings and the last estimate
+  const hidden = new Set();                                       // traces unticked in a legend (not kept across reloads)
   let scopeDrawPending = false;
 
   function buildScope() {
@@ -399,6 +400,9 @@
     $("scope-record").onclick = () => (rec.on ? scopeRecordStop() : scopeRecordStart());
     $("scope-reset-max").onclick = () => { scope.errMax = null; requestScopeDraw(); };
     ["scope-pos", "scope-err", "scope-tau"].forEach((id) => scopeWireCanvas($(id)));
+    document.querySelectorAll("#scope-card input[data-trace]").forEach((cb) => {
+      cb.onchange = () => { if (cb.checked) hidden.delete(cb.dataset.trace); else hidden.add(cb.dataset.trace); cb.closest(".li").classList.toggle("off", !cb.checked); requestScopeDraw(); };
+    });
     try {
       fft.on = localStorage.getItem("scopeFft") === "1";
       const sig = localStorage.getItem("scopeFftSignal"), fm = Number(localStorage.getItem("scopeFftFmax"));
@@ -598,9 +602,10 @@
     // The feed-forward the commanded torque contains: the gravity, friction and inertia terms as applied.
     const ff = src.tau_g.slice(i0, i1).map((g, i) => { const f = src.tau_f[i0 + i], d = src.tau_i[i0 + i]; return g === null || f === null || d === null ? null : g + f + d; });
     const axis = { tEnd, W, t, absolute: !!view.snap };
-    scopeDraw.drawStrip($("scope-pos"), axis, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
+    const shown = (list) => list.filter((s) => !hidden.has(s.key));
+    scopeDraw.drawStrip($("scope-pos"), axis, shown([{ key: "q_cmd", values: qCmd, color: blue }, { key: "q", values: q, color: amber }]), { minSpan: 0.2 });
     scopeDraw.drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
-    scopeDraw.drawStrip($("scope-tau"), axis, [{ values: ff, color: green }, { values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
+    scopeDraw.drawStrip($("scope-tau"), axis, shown([{ key: "tau_ff", values: ff, color: green }, { key: "tau_cmd", values: src.tau_cmd.slice(i0, i1), color: blue }, { key: "tau_meas", values: src.tau_meas.slice(i0, i1), color: amber }]), { symmetric: true, minSpan: 0.5 });
     scope.shown = t.length;
     if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err, ff });
     drawReadout();

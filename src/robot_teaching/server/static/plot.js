@@ -22,6 +22,7 @@
   const frames = { pos: null, err: null, tau: null };   // the mapping each strip was last drawn with (scopeDraw.drawStrip)
   let errSig = "pos";                      // the tracking-error strip: "pos" (° measured − commanded) or "tau" (N·m reported − commanded)
   let cursorT = null;                      // the time under the pointer, or null
+  const hidden = new Set();                // traces unticked in a legend (not kept across reloads)
   let drawPending = false;
 
   let toastTimer = null;
@@ -303,11 +304,15 @@
       const j1 = scopeDraw.upperBound(rb.t, tEnd - sh), j0 = Math.max(0, scopeDraw.lowerBound(rb.t, tEnd - W - sh) - 1);
       bs = { rb, j0, j1, sh, t: rb.t.subarray(j0, j1) };
     }
-    const bSeries = (col, color) => (bs ? [{ values: bs.rb[col].subarray(bs.j0, bs.j1), color, t: bs.t, tOffset: bs.sh, dash: DASH, alpha: B_ALPHA }] : []);
+    const bSeries = (col, color, key) => (bs ? [{ key, values: bs.rb[col].subarray(bs.j0, bs.j1), color, t: bs.t, tOffset: bs.sh, dash: DASH, alpha: B_ALPHA }] : []);
+    const aSeries = (col, color, key) => ({ key, values: run[col].subarray(i0, i1), color });
+    const shown = (list) => list.filter((s) => !hidden.has(s.key));
     const errCol = errSig === "tau" ? "tau_err" : "err_deg";
-    frames.pos = scopeDraw.drawStrip($("plot-pos"), axis, bSeries("q_cmd_deg", blue).concat(bSeries("q_deg", amber), [{ values: run.q_cmd_deg.subarray(i0, i1), color: blue }, { values: run.q_deg.subarray(i0, i1), color: amber }]), { minSpan: 0.2, cursor: cursorT, range: yz.pos });
-    frames.err = scopeDraw.drawStrip($("plot-err"), axis, bSeries(errCol, accent).concat([{ values: run[errCol].subarray(i0, i1), color: accent }]), { symmetric: true, minSpan: errSig === "tau" ? 0.05 : 0.1, cursor: cursorT, range: yz.err });
-    frames.tau = scopeDraw.drawStrip($("plot-tau"), axis, bSeries("tau_ff", green).concat(bSeries("tau_cmd", blue), bSeries("tau_meas", amber), [{ values: run.tau_ff.subarray(i0, i1), color: green }, { values: run.tau_cmd.subarray(i0, i1), color: blue }, { values: run.tau_meas.subarray(i0, i1), color: amber }]), { symmetric: true, minSpan: 0.5, cursor: cursorT, range: yz.tau });
+    frames.pos = scopeDraw.drawStrip($("plot-pos"), axis, shown(bSeries("q_cmd_deg", blue, "b_q_cmd").concat(bSeries("q_deg", amber, "b_q"), [aSeries("q_cmd_deg", blue, "q_cmd"), aSeries("q_deg", amber, "q")])), { minSpan: 0.2, cursor: cursorT, range: yz.pos });
+    // Without a comparison the error strip has one trace and no legend, so it is always drawn.
+    const errSeries = bs ? shown(bSeries(errCol, accent, "b_err").concat([aSeries(errCol, accent, "err")])) : [aSeries(errCol, accent, "err")];
+    frames.err = scopeDraw.drawStrip($("plot-err"), axis, errSeries, { symmetric: true, minSpan: errSig === "tau" ? 0.05 : 0.1, cursor: cursorT, range: yz.err });
+    frames.tau = scopeDraw.drawStrip($("plot-tau"), axis, shown(bSeries("tau_ff", green, "b_tau_ff").concat(bSeries("tau_cmd", blue, "b_tau_cmd"), bSeries("tau_meas", amber, "b_tau_meas"), [aSeries("tau_ff", green, "tau_ff"), aSeries("tau_cmd", blue, "tau_cmd"), aSeries("tau_meas", amber, "tau_meas")])), { symmetric: true, minSpan: 0.5, cursor: cursorT, range: yz.tau });
     showYSpans();
     drawOverview(accent);
     if (fft.on) drawSpectrum(run, i0, i1, t, accent, bs);
@@ -386,6 +391,9 @@
       $(`${STRIPS[key]}-yauto`).onclick = () => yAuto(key);
     }
     $("plot-err-signal").onchange = (ev) => setErrSignal(ev.target.value);
+    document.querySelectorAll("#scope-card input[data-trace]").forEach((cb) => {
+      cb.onchange = () => { if (cb.checked) hidden.delete(cb.dataset.trace); else hidden.add(cb.dataset.trace); cb.closest(".li").classList.toggle("off", !cb.checked); requestDraw(); };
+    });
     try { setErrSignal(localStorage.getItem("plotErrSignal") || "pos"); } catch (_) { setErrSignal("pos"); }
     wireOverview($("plot-overview"));
     try {
