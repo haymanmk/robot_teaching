@@ -15,6 +15,8 @@
   let poseFrame = "home";                       // "home": relative to the home position; "base": raw base frame
   try { poseFrame = localStorage.getItem("poseFrame") || "home"; } catch (_) { /* storage blocked */ }
   let wsRef = null;                             // the open state websocket (the scope sends its joint selection on it)
+  const FF_TERMS = ["gravity", "friction", "inertia"];
+  let ffTouched = 0;                            // when a feed-forward checkbox was last clicked (the state catches up after the POST)
 
   // ── API ────────────────────────────────────────────────────────────────
   async function api(method, path, body) {
@@ -127,6 +129,7 @@
       $(`jv${i}`).textContent = fmt(deg(state.qd[i]), 1);
       $(`jg${i}`).textContent = fmt(state.tau_g[i], 2);
     });
+    if (state.feedforward && Date.now() - ffTouched > 600) FF_TERMS.forEach((k) => { $(`ff-${k}`).checked = !!state.feedforward[k]; });
     const shown = poseFrame === "home" ? state.pose_home : state.pose;
     if (shown) {
       const [x, y, z] = shown.xyz, [r, p, w] = shown.rpy;
@@ -288,6 +291,13 @@
       const r = await act("POST", "/api/gains/reload", undefined, false);
       if (r) { toast(r.message); console.log("gains", r.gains); }
     };
+    FF_TERMS.forEach((k) => {
+      $(`ff-${k}`).onchange = async (ev) => {
+        ffTouched = Date.now();
+        const r = await act("POST", "/api/feedforward", { [k]: ev.target.checked }, false);
+        if (r) toast(r.message); else ev.target.checked = !ev.target.checked;
+      };
+    });
 
     $("btn-record").onclick = async () => {
       const r = await act("POST", "/api/program/points", {
@@ -360,9 +370,9 @@
   const SCOPE_KEEP = 60.0;                                        // s of samples kept on the client
   const SCOPE_WINDOWS = [0.5, 1, 2, 5, 10, 20, 60];               // s, the zoom steps
   const SCOPE_GAP = scopeDraw.GAP;                                // s without samples: lift the pen instead of bridging it
-  const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
+  const SCOPE_KEYS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i"];
   const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
-  const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m" };
+  const FFT_UNITS = { err: "°", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment (rounded to a power of two of samples)
   // errMax is the largest |measured − commanded| (°) over every sample received since the joint
   // was picked or "Reset max" was pressed, not only over the samples on screen; it survives a
@@ -516,7 +526,7 @@
   }
   function scopeRecordRow(chunk, i, epoch) {
     const qc = chunk.q_cmd[i], qm = chunk.q[i];
-    rec.rows.push(`${num(chunk.t[i], 4)},J${chunk.joint + 1},${num(qc, 6)},${num(qm, 6)},${qc === null || qm === null ? "" : (qm - qc).toFixed(6)},${num(chunk.tau_cmd[i], 4)},${num(chunk.tau_meas[i], 4)},${rec.run}`);
+    rec.rows.push(`${num(chunk.t[i], 4)},J${chunk.joint + 1},${num(qc, 6)},${num(qm, 6)},${qc === null || qm === null ? "" : (qm - qc).toFixed(6)},${num(chunk.tau_cmd[i], 4)},${num(chunk.tau_meas[i], 4)},${num(chunk.tau_g[i], 4)},${num(chunk.tau_f[i], 4)},${num(chunk.tau_i[i], 4)},${rec.run}`);
     rec.t.push(chunk.t[i]); rec.epoch = epoch;
     if (rec.rows.length >= rec.limit) { scopeRecordStop(); toast(`recording stopped after ${rec.limit} rows and saved`, true); }
   }
@@ -524,7 +534,7 @@
     if (!rec.on) return;
     rec.on = false;
     const n = rec.rows.length, name = rec.name;
-    const csv = "t_s,joint,q_cmd_rad,q_rad,err_rad,tau_cmd_Nm,tau_meas_Nm,run\n" + rec.rows.join("\n") + "\n";
+    const csv = "t_s,joint,q_cmd_rad,q_rad,err_rad,tau_cmd_Nm,tau_meas_Nm,tau_g_Nm,tau_f_Nm,tau_i_Nm,run\n" + rec.rows.join("\n") + "\n";
     rec.rows = []; rec.t = [];
     $("scope-record").classList.remove("on");
     requestScopeDraw();
@@ -565,7 +575,7 @@
     const key = `${scope.joint}|${fft.signal}|${scope.window}|${view.snap ? view.end : "live"}`;
     const now = performance.now();
     if (key !== fft.key || (!view.snap && now - fft.at >= 150)) {
-      const values = fft.signal === "err" ? series.err : fft.signal === "q" ? series.q : fft.signal === "q_cmd" ? series.qCmd : src[fft.signal].slice(i0, i1);
+      const values = fft.signal === "err" ? series.err : fft.signal === "q" ? series.q : fft.signal === "q_cmd" ? series.qCmd : fft.signal === "tau_ff" ? series.ff : src[fft.signal].slice(i0, i1);
       fft.spec = window.scopeDSP ? scopeDSP.welch(values, t, { segmentSeconds: FFT_SEGMENT, maxSegments: 32, gap: SCOPE_GAP }) : null;
       fft.key = key; fft.at = now;
     }
@@ -575,6 +585,7 @@
   function drawScope() {
     const css = getComputedStyle($("scope-card"));
     const blue = css.getPropertyValue("--scope-cmd").trim() || "#3b82f6", amber = css.getPropertyValue("--scope-meas").trim() || "#d95926", accent = css.getPropertyValue("--scope-err").trim() || "#6ea8fe";
+    const green = css.getPropertyValue("--scope-ff").trim() || "#199e70";
     const src = view.snap || scope, W = scope.window, n = src.t.length;
     const tEnd = view.snap ? view.end : (n ? src.t[n - 1] : 0);
     // On screen: from one sample before the left edge to the last one at or before the right edge.
@@ -584,12 +595,14 @@
     const qCmd = src.q_cmd.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
     const q = src.q.slice(i0, i1).map((v) => (v === null ? null : deg(v)));
     const err = q.map((v, i) => (v === null || qCmd[i] === null ? null : v - qCmd[i]));
+    // The feed-forward the commanded torque contains: the gravity, friction and inertia terms as applied.
+    const ff = src.tau_g.slice(i0, i1).map((g, i) => { const f = src.tau_f[i0 + i], d = src.tau_i[i0 + i]; return g === null || f === null || d === null ? null : g + f + d; });
     const axis = { tEnd, W, t, absolute: !!view.snap };
     scopeDraw.drawStrip($("scope-pos"), axis, [{ values: qCmd, color: blue }, { values: q, color: amber }], { minSpan: 0.2 });
     scopeDraw.drawStrip($("scope-err"), axis, [{ values: err, color: accent }], { symmetric: true, minSpan: 0.1 });
-    scopeDraw.drawStrip($("scope-tau"), axis, [{ values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
+    scopeDraw.drawStrip($("scope-tau"), axis, [{ values: ff, color: green }, { values: src.tau_cmd.slice(i0, i1), color: blue }, { values: src.tau_meas.slice(i0, i1), color: amber }], { symmetric: true, minSpan: 0.5 });
     scope.shown = t.length;
-    if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err });
+    if (fft.on) drawSpectrum(src, i0, i1, t, { qCmd, q, err, ff });
     drawReadout();
   }
   function drawReadout() {

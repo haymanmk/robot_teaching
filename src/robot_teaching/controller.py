@@ -61,12 +61,14 @@ class Mode(str, Enum):
 class TraceBuffer:
     """Ring buffer of one row per control tick for the scope: the controller clock, the
     commanded and measured joint positions, the torque the MIT law asks for (evaluated on the
-    host from the gains, the errors and the feed-forward) and the torque the motors report.
+    host from the gains, the errors and the feed-forward), the torque the motors report, and
+    the three feed-forward terms the commanded torque contains (gravity, friction, inertia, as
+    applied: zero for a term that is switched off). A field not given to :meth:`append` is NaN.
 
     ``epoch`` (wall-clock time of creation) identifies the run: a client that sees a new value
     knows the server restarted and the clock ``t`` started again from zero."""
 
-    FIELDS = ("q_cmd", "q", "tau_cmd", "tau_meas")
+    FIELDS = ("q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i")
 
     def __init__(self, n: int, size: int) -> None:
         self.n = int(n)
@@ -80,7 +82,7 @@ class TraceBuffer:
         i = self.seq % self.size
         self.t[i] = t
         for f in self.FIELDS:
-            self.data[f][i] = fields[f]
+            self.data[f][i] = fields.get(f, np.nan)
         self.seq += 1
 
     def since(self, seq: int | None, joint: int, max_samples: int = 1000) -> dict:
@@ -121,6 +123,7 @@ class Snapshot:
     playback: dict | None
     error: str | None
     tick_dt: float
+    feedforward: dict[str, bool] = field(default_factory=dict)   # which terms playback feeds forward
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +149,7 @@ class Snapshot:
             "playback": self.playback,
             "error": self.error,
             "tick_dt": self.tick_dt,
+            "feedforward": dict(self.feedforward),
         }
 
 
@@ -179,6 +183,12 @@ class TeachController:
         self.rate = float(cfg.control.rate or backend.rate)
 
         self._load_tuning(cfg)      # hold / free-drive / gripper gains, tau_scale, friction (see reload_gains)
+        # Which terms playback feeds forward: runtime state, set from the YAML at start-up and
+        # switched with set_feedforward (reload_gains leaves it alone). Each term's weight ramps
+        # between 0 and 1 over the gain fade time, so a switch never steps the torque.
+        ff = cfg.feedforward
+        self._ff_on = {"gravity": bool(ff.gravity), "friction": bool(ff.friction), "inertia": bool(ff.inertia)}
+        self._ff_weight = {k: (1.0 if v else 0.0) for k, v in self._ff_on.items()}
         self._margin = float(cfg.limits.joint_position_margin)
         self._jog_vel = float(cfg.jog.joint_velocity)
         self.home_q = resolve_vector(cfg.home.q, n, "home.q")
@@ -435,7 +445,7 @@ class TeachController:
                 "free_drive": {"kp": self._free_kp.tolist(), "kd": self._free_kd.tolist(),
                                "tau_scale": self._tau_scale.tolist()},
                 "friction": {"coulomb": self._coulomb.tolist(), "velocity_scale": self._friction_v0},
-                "feedforward": {"inertia_scale": self._ff_scale, "armature": self._armature.tolist(),
+                "feedforward": {**self._ff_on, "inertia_scale": self._ff_scale, "armature": self._armature.tolist(),
                                 "max_torque": self._ff_clip},
                 "gripper": {"kp": self._gripper_kp, "kd": self._gripper_kd, "hand_kd": self._gripper_hand_kd},
                 "current": {"kp": self._kp.tolist(), "kd": self._kd.tolist(), "settled": self._gain_t0 is None},
@@ -447,7 +457,38 @@ class TeachController:
         return (f"hold kp {vec(self._hold_kp)} kd {vec(self._hold_kd)}; "
                 f"free drive kp {self._free_kp[0]:g} kd {self._free_kd[0]:g}; "
                 f"friction {vec(self._coulomb)} N·m; inertia feed-forward x{self._ff_scale:g} "
-                f"armature {vec(self._armature)}; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}")
+                f"armature {vec(self._armature)}; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}; "
+                f"feed-forward {self._feedforward_summary()}")
+
+    def feedforward(self) -> dict[str, bool]:
+        """Which feed-forward terms playback adds to the MIT torque (gravity, friction, inertia)."""
+        with self._lock:
+            return dict(self._ff_on)
+
+    def set_feedforward(self, gravity: bool | None = None, friction: bool | None = None,
+                        inertia: bool | None = None) -> tuple[bool, str]:
+        """Switch the playback feed-forward terms on or off; ``None`` leaves a term as it is.
+
+        Works in every mode, playback included: a term's weight ramps between 0 and 1 over
+        ``free_drive.transition_duration``, so the torque never steps. Hold and free drive
+        always compensate gravity; the gravity switch only concerns playback.
+        """
+        with self._lock:
+            for name, value in (("gravity", gravity), ("friction", friction), ("inertia", inertia)):
+                if value is not None:
+                    self._ff_on[name] = bool(value)
+            return True, "feed-forward " + self._feedforward_summary()
+
+    def _feedforward_summary(self) -> str:
+        return ", ".join(f"{k} {'on' if v else 'off'}" for k, v in self._ff_on.items())
+
+    def _ramp_feedforward(self, dt: float) -> None:
+        # Over the configured fade time, not _gain_T: that is the duration of the gain move in
+        # progress, which play() and enter_hold() set to zero for an immediate switch.
+        step = dt / max(float(self.cfg.free_drive.transition_duration), 1e-3)
+        for name, on in self._ff_on.items():
+            target, w = (1.0 if on else 0.0), self._ff_weight[name]
+            self._ff_weight[name] = min(target, w + step) if target > w else max(target, w - step)
 
     # ══════════════════════════════════════════════════════════════════════
     # control thread
@@ -720,8 +761,10 @@ class TeachController:
                 else:
                     self._ee_speed = (0.0, 0.0)
                 blend = self._gain_blend()
+                self._ramp_feedforward(dt)
                 self._tau_f = np.zeros(self.n)
                 self._tau_i = np.zeros(self.n)
+                tau_g = self._tau_g                       # the gravity term applied (hold and free drive: always)
 
                 if self._mode == Mode.DISABLED:
                     self._publish(dt)
@@ -734,15 +777,18 @@ class TeachController:
                     tau = self._tau_g + self._integral
                 else:
                     q_cmd, qd_cmd, qdd_cmd = self._update_playback(dt)
-                    self._tau_f = self._friction_ff(qd_cmd)
-                    self._tau_i = self._inertia_ff(q_cmd, qd_cmd, qdd_cmd)
-                    tau = self._tau_g + self._tau_f + self._tau_i
+                    wg, wf, wi = (self._ff_weight[k] for k in ("gravity", "friction", "inertia"))
+                    self._tau_f = wf * self._friction_ff(qd_cmd) if wf > 0.0 else np.zeros(self.n)
+                    self._tau_i = wi * self._inertia_ff(q_cmd, qd_cmd, qdd_cmd) if wi > 0.0 else np.zeros(self.n)
+                    tau_g = wg * self._tau_g
+                    tau = tau_g + self._tau_f + self._tau_i
                 self.backend.send_arm_mit(q_cmd, qd_cmd, self._kp, self._kd, tau)
                 tau_meas = self.backend.read_torques()
                 self._trace.append(
                     self._clock, q_cmd=q_cmd, q=self._q,
                     tau_cmd=self._kp * (q_cmd - self._q) + self._kd * (qd_cmd - self._qd) + tau,
                     tau_meas=np.nan if tau_meas is None else np.asarray(tau_meas, float)[: self.n],
+                    tau_g=tau_g, tau_f=self._tau_f, tau_i=self._tau_i,
                 )
                 if self.backend.has_gripper and self._gripper_target is not None:
                     if self._gripper_hand and self._gripper is not None and self._mode in (Mode.HOLD, Mode.FREE_DRIVE):
@@ -807,6 +853,7 @@ class TeachController:
             playback=playback,
             error=self._error,
             tick_dt=float(dt),
+            feedforward=dict(self._ff_on),
         )
         with self._snap_lock:
             self._snapshot = snap

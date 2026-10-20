@@ -95,13 +95,20 @@ class FrictionConfig:
 
 @dataclass
 class FeedforwardConfig:
-    """Inverse-dynamics feed-forward during playback, on top of gravity and friction.
+    """Which torques playback feeds forward on top of the MIT law, and the inverse-dynamics term.
 
-    ``inertia_scale × (M(q) q̈ + C(q, q̇) q̇ + armature · q̈)`` evaluated on the commanded
-    trajectory is added to the MIT torque, clipped to ``±max_torque`` per joint. ``armature``
-    is the rotor inertia reflected through the gear (rotor inertia × ratio², kg·m², per joint),
-    which the URDF lacks; identify it on the arm. ``inertia_scale: 0`` disables the term.
+    ``gravity``, ``friction`` and ``inertia`` are the start-up state of the three terms (the
+    pendant and ``POST /api/feedforward`` switch them live, ramped in over the gain fade time):
+    the URDF gravity torque, the Coulomb term of the ``friction`` section, and the
+    inverse-dynamics term ``inertia_scale × (M(q) q̈ + C(q, q̇) q̇ + armature · q̈)`` evaluated
+    on the commanded trajectory and clipped to ``±max_torque`` per joint. Gravity alone is
+    normally enough; hold and free drive always compensate it. ``armature`` is the rotor
+    inertia reflected through the gear (rotor inertia × ratio², kg·m², per joint), which the
+    URDF lacks; identify it on the arm.
     """
+    gravity: bool = True
+    friction: bool = False
+    inertia: bool = False
     inertia_scale: float = 1.0
     armature: Any = 0.0          # kg·m², scalar or one value per joint
     max_torque: float = 3.0      # N·m, clip of the term per joint

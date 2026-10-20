@@ -30,3 +30,8 @@ def test_hardware_yaml_resolves_relative_to_the_config_file(tmp_path):
     assert load_config(base).hardware_yaml == "rebotarm_rs.yaml"
     base.write_text("hardware_yaml: null\n")
     assert load_config(base).hardware_yaml is None
+
+
+def test_feedforward_switches_default_to_gravity_only():
+    ff = load_config().feedforward
+    assert (ff.gravity, ff.friction, ff.inertia) == (True, False, False)

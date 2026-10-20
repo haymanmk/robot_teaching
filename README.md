@@ -15,9 +15,10 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
   acceleration limits; linear moves are straight lines in position with geodesic
   orientation under the same minimum-jerk time law (blended linear blocks run under a
   velocity-limit curve), tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
-  500 Hz in MIT mode with gravity, Coulomb-friction and inverse-dynamics feed-forward
-  (the URDF's inertia and Coriolis terms plus a per-joint armature for the reflected rotor
-  inertia, evaluated on the commanded motion). Speed override, loop and smooth stop.
+  500 Hz in MIT mode with gravity feed-forward, and optionally Coulomb-friction and
+  inverse-dynamics feed-forward (the URDF's inertia and Coriolis terms plus a per-joint armature
+  for the reflected rotor inertia, evaluated on the commanded motion), each term switchable live
+  from the pendant. Speed override, loop and smooth stop.
 * **Simulator** with the same interface as the hardware, so the UI and planner run and
   are tested without the arm.
 
@@ -140,14 +141,15 @@ A fuller offline validation of the planner (smoothness, limits, straightness, pl
 
 **Scope.** The card at the bottom of the pendant shows one joint at the full control rate:
 commanded and measured position, their difference, and the torque the MIT law asks for next
-to the torque the motor reports. Pick the joint in its drop-down. It is the tool for telling
+to the torque the motor reports and the feed-forward it contains. Pick the joint in its drop-down. It is the tool for telling
 stick-slip (a sawtooth in the error at low speed) from bus trouble (gaps on every joint) from
 low damping (a 3–4 Hz ring on one joint). **−** / **+** (or Ctrl+wheel over a trace) zoom the
 window between 0.5 s and 60 s, the length of the history the server keeps. **Pause** freezes
 the traces: the time axis then shows the controller clock and dragging a trace looks back in
 time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
 the selected joint to a CSV file that downloads on **Stop**, with the columns `t_s`, `joint`,
-`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm` and `run` (`run` increments when
+`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm`, the three feed-forward terms as
+applied `tau_g_Nm`, `tau_f_Nm`, `tau_i_Nm`, and `run` (`run` increments when
 the server restarts, where `t_s` starts again from zero); **Plot…** opens the offline plotter for
 such a file (below). **Spectrum** adds a fourth strip
 with the amplitude spectrum (dB) of the tracking error, a position or a torque over the samples
@@ -177,7 +179,10 @@ a window, and hovering a trace reads the sample under the pointer. Each strip fi
 axis to the samples on screen until you zoom it: **−** / **+** / **Auto** at the right of its
 title, or Shift+wheel over the trace, after which a drag also moves it up and down. The
 tracking-error strip shows the position error (° measured − commanded) or the torque error
-(N·m reported by the motor − commanded by the MIT law), which the spectrum offers too.
+(N·m reported by the motor − commanded by the MIT law), which the spectrum offers too. The
+torque strip also draws the feed-forward the command contains, and the spectrum offers its
+gravity, friction and inertia terms one by one; a recording made before these columns existed
+still loads, without them.
 **Compare** overlays a second
 recording, B, on the same axes, dashed and a little lighter, with its start on the start of the
 first run; **offset** (or Shift+drag on a trace) slides B in time and **Align starts** puts it
@@ -207,8 +212,8 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 | `limits` | per-joint velocity / acceleration at speed 1.0, Cartesian speed limits, joint-limit margin, planner sample spacing |
 | `free_drive` | compliant gains, integral term, `tau_scale` per joint, release / re-lock thresholds, velocity filter |
 | `hold` | stiff gains (null = the vendor's per-joint MIT gains) |
-| `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; 0 disables |
-| `feedforward` | inverse-dynamics feed-forward during playback: `inertia_scale` (0 disables), per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
+| `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; applied while `feedforward.friction` is on, 0 disables a joint |
+| `feedforward` | the start-up state of the three playback feed-forward terms, `gravity` / `friction` / `inertia` (default: gravity only), and the inverse-dynamics term: `inertia_scale`, per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
 | `can` | bring the SocketCAN interface up on Connect (`bring_up`) and at which `bitrate` |
@@ -242,11 +247,25 @@ thresholds, the friction feed-forward and the inverse-dynamics feed-forward, fad
 during playback. Limits, jog steps and the home position still need a restart.
 `GET /api/gains` shows the values in use.
 
+**Feed-forward terms.** Playback adds up to three torques to the MIT law's kp·error +
+kd·velocity-error term: the URDF gravity torque, the Coulomb friction term and the
+inverse-dynamics term. A PD with gravity compensation is the textbook centralized
+multi-joint controller and normally enough, so the shipped default is gravity only; the
+**Feed-forward** checkboxes on the Playback card (or `POST /api/feedforward` with any of
+`gravity`, `friction`, `inertia`) switch each term on or off, in any mode, playback included:
+a change ramps in over `free_drive.transition_duration`, so the torque never steps. Hold
+and free drive always compensate gravity. The start-up state is `feedforward.gravity` /
+`friction` / `inertia` in the YAML; **Reload gains** re-reads the magnitudes
+(`friction.coulomb`, `inertia_scale`, `armature`) but leaves the switches where they are. The
+scope's torque strip draws the feed-forward the command contains, and a recording keeps the
+three terms apart, so a wobble driven by a feed-forward term can be told from one driven by
+the feedback.
+
 **Calibrate on your arm before trusting the defaults:** the gripper `open_position`
 (the vendor examples use 5.0 rad), the free-drive gains (start with one joint enabled,
 from the "L" pose joint2 ≈ 0.7 rad, joint3 ≈ 1.1 rad), the playback limits (the
-defaults are deliberately slow), and the friction feed-forward `friction.coulomb` (the
-defaults are 75 % of the values the vendor measured on one arm; the vendor's
+defaults are deliberately slow), and the friction feed-forward `friction.coulomb` before
+switching it on (the values are 75 % of what the vendor measured on one arm; the vendor's
 `tools/gravity_calibration` PD sweeps measure them on yours).
 
 ## Safety

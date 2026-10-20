@@ -70,6 +70,12 @@
       <label><input type="checkbox" id="pb-loop"> Loop</label>
       <label>Start from <select id="pb-start"></select></label>
     </div>
+    <div class="row ff-row">
+      <label title="the torques playback adds to the MIT law's kp·error + kd·velocity-error term; a change ramps in over the gain fade time, during playback too. Hold and free drive always compensate gravity. The start-up state is feedforward.gravity / friction / inertia in teaching.yaml.">Feed-forward</label>
+      <label title="g(q) of the URDF: the textbook PD + gravity-compensation controller"><input type="checkbox" id="ff-gravity"> gravity</label>
+      <label title="Coulomb friction (friction.coulomb) with the sign of the commanded velocity"><input type="checkbox" id="ff-friction"> friction</label>
+      <label title="inverse dynamics on the commanded motion: inertia_scale × (M(q)·q̈ + C(q,q̇)·q̇ + armature·q̈), clipped to max_torque"><input type="checkbox" id="ff-inertia"> inertia</label>
+    </div>
     <div class="row">
       <button class="btn" id="btn-plan">Plan (preview)</button>
       <button class="btn big green" id="btn-play">▶ Play</button>
@@ -181,7 +187,7 @@
           <button id="scope-zoom-in" title="zoom in: a shorter window">+</button>
         </span>
         <button class="btn" id="scope-pause" title="freeze the traces: the time axis then shows the controller clock and dragging a trace looks back in time; Resume returns to live. The readout and the recording stay live.">⏸ Pause</button>
-        <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, run)">● Record</button>
+        <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, tau_g_Nm, tau_f_Nm, tau_i_Nm, run)">● Record</button>
         <button class="btn" id="scope-fft-toggle" title="show the amplitude spectrum of one signal over the samples on screen: Welch's method, Hann-windowed and detrended 2 s segments averaged, segments with missing samples left out; Ctrl+wheel over it zooms the frequency range">Spectrum</button>
         <span class="kv" id="scope-readout"></span>
         <a class="btn" href="/plot" target="_blank" rel="noopener" title="open a recorded CSV file in the offline plotter (a page that also works from disk, without the server)">Plot…</a>
@@ -201,7 +207,7 @@
       </div>
       <div class="strip">
         <div class="strip-title">Torque <span class="muted">N·m</span>
-          <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span></div>
+          <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor <i class="sw ff"></i>feed-forward (the terms switched on)</span></div>
         <canvas id="scope-tau"></canvas>
       </div>
       <div class="strip hidden" id="fft-strip">
@@ -212,6 +218,7 @@
             <option value="q_cmd">commanded position</option>
             <option value="tau_cmd">commanded torque</option>
             <option value="tau_meas">reported torque</option>
+            <option value="tau_ff">feed-forward torque</option>
           </select></label>
           <span class="seg scope-zoom" aria-label="frequency range">
             <button id="fft-zoom-out" title="wider frequency range (Ctrl+wheel over the spectrum also zooms)">−</button>
@@ -222,7 +229,7 @@
         <canvas id="scope-fft"></canvas>
       </div>
     </div>
-    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the reported torque comes from the motor's feedback frame. <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
+    <p class="hint">Pick a joint to watch it follow its setpoint. A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the feed-forward trace is the gravity, friction and inertia terms switched on in the Playback card, and the recording keeps the three apart; the reported torque comes from the motor's feedback frame. <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
   </section>
 </main>
 <script src="/static/dsp.js"></script>

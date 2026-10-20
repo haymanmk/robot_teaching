@@ -38,6 +38,12 @@ class ModeRequest(BaseModel):
     mode: Literal["hold", "free_drive"]
 
 
+class FeedforwardRequest(BaseModel):
+    gravity: bool | None = None
+    friction: bool | None = None
+    inertia: bool | None = None
+
+
 class JointJog(BaseModel):
     joint: int = Field(ge=0)
     delta: float
@@ -337,6 +343,22 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         res = _result(controller.reload_gains(fresh))
         return res | {"gains": controller.gains(), "source": str(source) if source else None,
                       "local": str(fresh.local_path) if fresh.local_path else None}
+
+    @app.get("/api/feedforward")
+    def get_feedforward():
+        """Which feed-forward terms playback adds to the MIT torque: gravity, friction, inertia."""
+        return controller.feedforward()
+
+    @app.post("/api/feedforward")
+    def set_feedforward(req: FeedforwardRequest):
+        """Switch feed-forward terms on or off; a term not given keeps its state.
+
+        A change ramps in over ``free_drive.transition_duration``, during playback too. Hold
+        and free drive always compensate gravity. The start-up state comes from
+        ``feedforward.gravity`` / ``friction`` / ``inertia`` in teaching.yaml.
+        """
+        res = _result(controller.set_feedforward(req.gravity, req.friction, req.inertia))
+        return res | {"feedforward": controller.feedforward()}
 
     @app.get("/api/state")
     def get_state():

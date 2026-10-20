@@ -246,7 +246,8 @@ def test_gripper_hand_mode(rig):
 
 
 def _with_friction(cfg, coulomb):
-    return dataclasses.replace(cfg, friction=dataclasses.replace(cfg.friction, coulomb=coulomb, velocity_scale=0.02))
+    return dataclasses.replace(cfg, friction=dataclasses.replace(cfg.friction, coulomb=coulomb, velocity_scale=0.02),
+                               feedforward=dataclasses.replace(cfg.feedforward, friction=True))
 
 
 def _play_and_measure(cfg, model):
@@ -298,6 +299,7 @@ def test_trace_buffer_wraps_and_continues():
     for k in range(20):
         buf.append(0.01 * k, q_cmd=[k, -k], q=[k + 0.5, 0.0], tau_cmd=[1.0, 2.0], tau_meas=np.nan)
     chunk = buf.since(None, 1)
+    assert all(v is None for v in chunk["tau_g"]), "a field not given to append reads as missing"
     assert chunk["seq"] == 20 and len(chunk["t"]) == 8, "only the newest rows survive a wrap"
     assert chunk["epoch"] == buf.epoch > 0, "the chunk names the run its samples come from"
     assert chunk["q_cmd"] == [-k for k in range(12, 20)] and chunk["t"] == pytest.approx([0.01 * k for k in range(12, 20)])
@@ -392,8 +394,8 @@ def _fast(cfg, scale=3.0, armature=0.0, inertia_scale=1.0, max_torque=3.0):
         limits=dataclasses.replace(lim, joint_velocity=vmax, joint_acceleration=amax),
         friction=dataclasses.replace(cfg.friction, coulomb=0.3, velocity_scale=0.05),
         free_drive=dataclasses.replace(cfg.free_drive, tau_scale=1.0),
-        feedforward=dataclasses.replace(cfg.feedforward, inertia_scale=inertia_scale, armature=armature,
-                                        max_torque=max_torque),
+        feedforward=dataclasses.replace(cfg.feedforward, friction=True, inertia=True, inertia_scale=inertia_scale,
+                                        armature=armature, max_torque=max_torque),
     )
 
 
@@ -431,4 +433,52 @@ def test_inertia_feedforward_reduces_acceleration_error(cfg, model):
     _, tau_clipped = _tracking(_fast(cfg, armature=armature, inertia_scale=1.0, max_torque=0.1), model, armature)
     assert np.max(tau_clipped) <= 0.1 + 1e-9
     ctl = TeachController(SimBackend(realtime=False, q0=L_POSE, model=model), _fast(cfg, armature=armature))
-    assert ctl.gains()["feedforward"] == {"inertia_scale": 1.0, "armature": [armature] * 6, "max_torque": 3.0}
+    assert ctl.gains()["feedforward"] == {"gravity": True, "friction": True, "inertia": True,
+                                          "inertia_scale": 1.0, "armature": [armature] * 6, "max_torque": 3.0}
+
+
+def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
+    # Friction and inertia are configured but switched off (the shipped default): playback sends
+    # gravity alone. Switching a term on during playback ramps it in over the gain fade time;
+    # switching gravity off takes g(q) out of the sent torque. The trace records the applied terms.
+    base = dataclasses.replace(cfg, friction=dataclasses.replace(cfg.friction, coulomb=0.3, velocity_scale=0.02),
+                               feedforward=dataclasses.replace(cfg.feedforward, armature=0.1, inertia_scale=1.0))
+    assert (base.feedforward.gravity, base.feedforward.friction, base.feedforward.inertia) == (True, False, False)
+    sim = SimBackend(realtime=False, q0=L_POSE, model=model, armature=0.1)
+    ctl = TeachController(sim, base)
+    ctl.start()
+    s = settle(sim, ctl, 300)
+    assert ctl.feedforward() == {"gravity": True, "friction": False, "inertia": False} == s.feedforward
+    traj = plan_program(ctl.model, _program(), s.q_target, base, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0, loop=True)[0]
+    for _ in range(50):
+        s = settle(sim, ctl, 10)
+        assert s.mode == Mode.PLAYBACK.value
+        assert np.all(s.tau_f == 0.0) and np.all(s.tau_i == 0.0)
+        assert np.allclose(sim._cmd[4], s.tau_g), "gravity alone is sent"
+    ok, msg = ctl.set_feedforward(friction=True, inertia=True)
+    assert ok and msg == "feed-forward gravity on, friction on, inertia on"
+    assert ctl.feedforward() == {"gravity": True, "friction": True, "inertia": True}
+    early = np.zeros(ctl.n)
+    for _ in range(12):                                   # 0.24 s: half of the 0.5 s ramp at most
+        s = settle(sim, ctl, 10)
+        early = np.maximum(early, np.abs(s.tau_f))
+    assert 0.0 < np.max(early) <= 0.5 * 0.3 + 1e-6, early
+    late = np.zeros(ctl.n)
+    for _ in range(int(traj.duration * 50) + 50):        # the rest of the ramp and a full lap
+        s = settle(sim, ctl, 10)
+        late = np.maximum(late, np.abs(s.tau_f))
+    assert np.max(late) > 0.9 * 0.3, late
+    chunk = ctl.trace_since(int(np.argmax(late)), None, 20)
+    assert len(chunk["tau_g"]) == len(chunk["t"]) == len(chunk["tau_f"]) == len(chunk["tau_i"]) == 20
+    assert np.allclose(chunk["tau_g"], chunk["tau_g"]) and max(abs(v) for v in chunk["tau_g"]) > 0.0
+    ok, msg = ctl.set_feedforward(gravity=False)
+    assert ok and msg == "feed-forward gravity off, friction on, inertia on"
+    settle(sim, ctl, 300)                                 # the ramp is over
+    s = settle(sim, ctl, 1)
+    assert s.mode == Mode.PLAYBACK.value and np.allclose(sim._cmd[4], s.tau_f + s.tau_i), "no gravity in the sent torque"
+    assert all(v == 0.0 for v in ctl.trace_since(1, None, 5)["tau_g"]), "the trace records the applied gravity term"
+    assert ctl.stop_motion()[0]
+    settle(sim, ctl, 400)
+    assert ctl.snapshot().mode == Mode.HOLD.value and np.allclose(sim._cmd[4], ctl.snapshot().tau_g), "hold always compensates gravity"
+    ctl.shutdown()

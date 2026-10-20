@@ -9,20 +9,24 @@ const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if
 const close = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
 
 // A recording the way the pendant writes it: 500 Hz, one joint, optional empty cells, a run column.
-const HEADER = "t_s,joint,q_cmd_rad,q_rad,err_rad,tau_cmd_Nm,tau_meas_Nm,run";
-function row(t, qc, q, tc, tm, run) {
+const HEADER = "t_s,joint,q_cmd_rad,q_rad,err_rad,tau_cmd_Nm,tau_meas_Nm,tau_g_Nm,tau_f_Nm,tau_i_Nm,run";
+const OLD_HEADER = "t_s,joint,q_cmd_rad,q_rad,err_rad,tau_cmd_Nm,tau_meas_Nm,run";
+// The feed-forward terms: gravity 1.0·cos t, friction 0.2, inertia 0.05·sin t, so their sum is the
+// commanded torque minus a PD part of 0.3·cos t.
+function row(t, qc, q, tc, tm, run, old) {
   const e = qc === null || q === null ? "" : (q - qc).toFixed(6);
   const n = (v, d) => (v === null ? "" : v.toFixed(d));
-  return `${t.toFixed(4)},J2,${n(qc, 6)},${n(q, 6)},${e},${n(tc, 4)},${n(tm, 4)},${run}`;
+  const ff = old ? "" : `${(1.0 * Math.cos(t)).toFixed(4)},${(0.2).toFixed(4)},${(0.05 * Math.sin(t)).toFixed(4)},`;
+  return `${t.toFixed(4)},J2,${n(qc, 6)},${n(q, 6)},${e},${n(tc, 4)},${n(tm, 4)},${ff}${run}`;
 }
 function synth(seconds, run, opts) {
-  const o = Object.assign({ fs: 500, t0: 0, hole: null, nullAt: null, nullTorqueAt: null }, opts || {});
+  const o = Object.assign({ fs: 500, t0: 0, hole: null, nullAt: null, nullTorqueAt: null, old: false }, opts || {});
   const rows = [];
   for (let i = 0; i < Math.round(o.fs * seconds); i++) {
     const t = o.t0 + i / o.fs;
     if (o.hole && t >= o.hole[0] && t < o.hole[1]) continue;
     const qc = 0.5 * Math.sin(t), q = qc + 0.01 * Math.sin(2 * Math.PI * 3 * t);
-    rows.push(row(t, qc, i === o.nullAt ? null : q, 1.5 * Math.cos(t), i === o.nullTorqueAt ? null : 1.4 * Math.cos(t), run));
+    rows.push(row(t, qc, i === o.nullAt ? null : q, 1.5 * Math.cos(t), i === o.nullTorqueAt ? null : 1.4 * Math.cos(t), run, o.old));
   }
   return rows;
 }
@@ -38,6 +42,7 @@ function synth(seconds, run, opts) {
   check(s.samples === 1000 && close(s.rate, 500, 0.01) && s.gaps === 0 && s.missing === 0, `summary: ${s.samples} samples at ${s.rate.toFixed(1)} Hz, ${s.gaps} holes`);
   check(close(s.errMax, 0.01 * 180 / Math.PI, 1e-3) && close(s.errRms, 0.01 * 180 / Math.PI / Math.SQRT2, 2e-3), `max |error| ${s.errMax.toFixed(4)}° (0.5730), rms ${s.errRms.toFixed(4)}° (0.4052)`);
   check(close(s.tauMax, 1.5, 1e-3), `peak |torque| ${s.tauMax.toFixed(3)} N·m`);
+  check(close(run.tau_g[0], 1.0, 1e-4) && close(run.tau_f[0], 0.2, 1e-4) && close(run.tau_i[250], 0.05 * Math.sin(0.5), 1e-4) && close(run.tau_ff[250], Math.cos(0.5) + 0.2 + 0.05 * Math.sin(0.5), 1e-4), `the feed-forward terms and their sum (${run.tau_ff[250].toFixed(4)} N·m at 0.5 s)`);
   // The torque error: reported 1.4·cos t against commanded 1.5·cos t, so −0.1·cos t; over 2 s its
   // mean square is 0.01·(1/2 + sin 4 / 8).
   const rmsExpected = 0.1 * Math.sqrt(0.5 + Math.sin(4) / 8);
@@ -83,7 +88,9 @@ function synth(seconds, run, opts) {
   const text = "run,q_rad,t_s,q_cmd_rad\n1,0.1,0.000,0.0\n1,0.2,0.002,0.1\n";
   const r = rec.parse(text);
   check(r.rows === 2 && close(r.runs[0].q[1], 0.2) && close(r.runs[0].q_cmd[1], 0.1) && close(r.runs[0].t[1], 0.002), "columns in another order are read by name");
-  check(r.joint === "" && Number.isNaN(r.runs[0].tau_cmd[0]) && r.problems.length === 2, `missing torque columns are reported (${r.problems.join("; ")})`);
+  check(r.joint === "" && Number.isNaN(r.runs[0].tau_cmd[0]) && r.problems.length === 3, `missing torque and feed-forward columns are reported (${r.problems.join("; ")})`);
+  const old = rec.parse(OLD_HEADER + "\n" + synth(0.2, 1, { old: true }).join("\n") + "\n");
+  check(old.rows === 100 && Number.isNaN(old.runs[0].tau_ff[0]) && Number.isFinite(old.runs[0].tau_cmd[0]) && old.problems.length === 1 && old.problems[0].includes("feed-forward"), `an older recording loads without the feed-forward (${old.problems.join("; ")})`);
   let err = null;
   try { rec.parse("t_s,q_rad,qd_rad\n0,1,2\n"); } catch (e) { err = e.message; }
   check(err && err.includes("q_cmd_rad"), `a file without q_cmd_rad is refused: ${err}`);

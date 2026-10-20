@@ -1,5 +1,6 @@
 /* Reading a scope recording: the CSV the pendant's Record button writes (columns t_s, joint,
-   q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, run; one joint per file). Plain functions
+   q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, tau_g_Nm, tau_f_Nm, tau_i_Nm, run; one
+   joint per file; older files lack the three feed-forward columns). Plain functions
    without DOM access, so Node can run tests/record_check.js on them; in the browser they live on
    window.scopeRecord. */
 (function (root, factory) {
@@ -8,19 +9,23 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
   const GAP = 0.25;                                               // s without samples: a hole (as in the scope)
-  const FIELDS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas"];
-  const COLUMNS = { t: "t_s", q_cmd: "q_cmd_rad", q: "q_rad", tau_cmd: "tau_cmd_Nm", tau_meas: "tau_meas_Nm" };
+  const FIELDS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i"];
+  const REQUIRED = ["t", "q_cmd", "q"];
+  const FF = ["tau_g", "tau_f", "tau_i"];
+  const COLUMNS = { t: "t_s", q_cmd: "q_cmd_rad", q: "q_rad", tau_cmd: "tau_cmd_Nm", tau_meas: "tau_meas_Nm", tau_g: "tau_g_Nm", tau_f: "tau_f_Nm", tau_i: "tau_i_Nm" };
   const DEG = 180 / Math.PI;
 
   /**
    * Parse the text of a recording. Columns are found by name in the header line, so their order
-   * does not matter; `t_s`, `q_cmd_rad` and `q_rad` are required, the torques and `run` optional.
-   * An empty cell (a sample without a measurement) reads as NaN. The rows are split into runs:
-   * a new run starts where the `run` column changes or where `t_s` steps backwards (a server
-   * restart; its clock starts again from zero). Returns { joint, rows, runs, problems }; each run
-   * is { run, t, q_cmd, q, tau_cmd, tau_meas, q_cmd_deg, q_deg, err_deg, tau_err } with
-   * Float64Array columns: the positions again in degrees for the display, the tracking error
-   * (measured − commanded) in degrees and the torque tracking error (reported − commanded) in N·m.
+   * does not matter; `t_s`, `q_cmd_rad` and `q_rad` are required, the torques, the feed-forward
+   * terms and `run` optional. An empty cell (a sample without a measurement) reads as NaN. The
+   * rows are split into runs: a new run starts where the `run` column changes or where `t_s`
+   * steps backwards (a server restart; its clock starts again from zero). Returns { joint, rows,
+   * runs, problems }; each run is { run, t, q_cmd, q, tau_cmd, tau_meas, tau_g, tau_f, tau_i,
+   * q_cmd_deg, q_deg, err_deg, tau_err, tau_ff } with Float64Array columns: the positions again
+   * in degrees for the display, the tracking error (measured − commanded) in degrees, the torque
+   * tracking error (reported − commanded) in N·m and the feed-forward torque (the sum of the
+   * gravity, friction and inertia terms) in N·m.
    */
   function parse(text) {
     const problems = [];
@@ -29,10 +34,11 @@
     const header = text.slice(0, end).replace(/\r$/, "").split(",").map((s) => s.trim());
     const col = {};
     for (const f of FIELDS) col[f] = header.indexOf(COLUMNS[f]);
-    const absent = FIELDS.filter((f) => col[f] < 0 && f !== "tau_cmd" && f !== "tau_meas").map((f) => COLUMNS[f]);
+    const absent = REQUIRED.filter((f) => col[f] < 0).map((f) => COLUMNS[f]);
     if (absent.length) throw new Error(`not a scope recording: no ${absent.join(", ")} column (header: ${header.slice(0, 8).join(", ")})`);
     const jointCol = header.indexOf("joint"), runCol = header.indexOf("run");
     for (const f of ["tau_cmd", "tau_meas"]) if (col[f] < 0) problems.push(`no ${COLUMNS[f]} column`);
+    if (FF.some((f) => col[f] < 0)) problems.push("no feed-forward columns (recorded before they were added)");
     // Count the lines once so the columns can be typed arrays.
     let lines = 0;
     for (let i = text.indexOf("\n", end + 1); i >= 0; i = text.indexOf("\n", i + 1)) lines++;
@@ -88,11 +94,13 @@
         r.q_deg = new Float64Array(i - start);
         r.err_deg = new Float64Array(i - start);
         r.tau_err = new Float64Array(i - start);
+        r.tau_ff = new Float64Array(i - start);
         for (let k = 0; k < i - start; k++) {
           r.q_cmd_deg[k] = r.q_cmd[k] * DEG;
           r.q_deg[k] = r.q[k] * DEG;
           r.err_deg[k] = (r.q[k] - r.q_cmd[k]) * DEG;                       // NaN when either is missing
           r.tau_err[k] = r.tau_meas[k] - r.tau_cmd[k];
+          r.tau_ff[k] = r.tau_g[k] + r.tau_f[k] + r.tau_i[k];
         }
         runs.push(r);
         start = i;

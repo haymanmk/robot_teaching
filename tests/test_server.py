@@ -47,6 +47,20 @@ def test_config_and_state(client):
     assert client.get("/").status_code == 200
 
 
+def test_feedforward_switches(client):
+    assert client.get("/api/feedforward").json() == {"gravity": True, "friction": False, "inertia": False}
+    r = client.post("/api/feedforward", json={"inertia": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["feedforward"] == {"gravity": True, "friction": False, "inertia": True}
+    assert r.json()["message"] == "feed-forward gravity on, friction off, inertia on"
+    g = client.get("/api/gains").json()["feedforward"]
+    assert g["inertia"] is True and g["friction"] is False and g["inertia_scale"] == 1.0
+    client.sim.step(5)
+    assert client.get("/api/state").json()["state"]["feedforward"] == {"gravity": True, "friction": False, "inertia": True}
+    assert client.post("/api/feedforward", json={"friction": "maybe"}).status_code == 422
+    assert client.post("/api/feedforward", json={}).json()["feedforward"]["inertia"] is True, "nothing given: nothing changes"
+
+
 def test_plotter_page_is_served(client):
     r = client.get("/plot")                       # redirects to the static page, which the client follows
     assert r.status_code == 200 and 'src="plot.js"' in r.text and 'src="scope.js"' in r.text
@@ -139,6 +153,7 @@ def test_websocket_trace_selection(client):
         else:
             pytest.fail("no trace chunk after selecting a joint")
         tr = msg["trace"]
+        assert len(tr["tau_g"]) == len(tr["t"]) == len(tr["tau_f"]) == len(tr["tau_i"]), "the feed-forward terms ride along"
         assert tr["joint"] == 2 and len(tr["t"]) > 0 and len(tr["q"]) == len(tr["t"]) == len(tr["tau_cmd"])
         assert isinstance(tr["epoch"], float) and tr["epoch"] > 0
         assert tr["q"][-1] == pytest.approx(msg["state"]["q"][2], abs=1e-3)

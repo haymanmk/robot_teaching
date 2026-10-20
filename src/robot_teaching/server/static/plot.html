@@ -61,8 +61,8 @@
     </div>
     <div class="strip">
       <div class="strip-title">Torque <span class="muted">N·m</span>
-        <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor</span>
-        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B reported</span>
+        <span class="lg"><i class="sw cmd"></i>commanded (MIT law on the host) <i class="sw meas"></i>reported by the motor <i class="sw ff"></i>feed-forward</span>
+        <span class="lg lg-b hidden"><i class="sw cmd dashed"></i>B commanded <i class="sw meas dashed"></i>B reported <i class="sw ff dashed"></i>B feed-forward</span>
         <span class="seg scope-zoom yzoom" aria-label="value zoom"><button id="plot-tau-yout" title="zoom out the value axis (Shift+wheel over the trace also zooms it; once zoomed, a drag also moves it up and down)">−</button><button id="plot-tau-yin" title="zoom in the value axis">+</button><button id="plot-tau-yauto" title="fit the value axis to the samples on screen again" disabled>Auto</button></span>
         <span class="kv" id="plot-tau-yspan"></span></div>
       <canvas id="plot-tau" class="pan"></canvas>
@@ -76,6 +76,10 @@
           <option value="q_cmd">commanded position</option>
           <option value="tau_cmd">commanded torque</option>
           <option value="tau_meas">reported torque</option>
+          <option value="tau_ff">feed-forward torque</option>
+          <option value="tau_g">gravity term</option>
+          <option value="tau_f">friction term</option>
+          <option value="tau_i">inertia term</option>
         </select></label>
         <span class="seg scope-zoom" aria-label="frequency range">
           <button id="plot-fft-zoom-out" title="wider frequency range (Ctrl+wheel over the spectrum also zooms)">−</button>
@@ -88,7 +92,7 @@
     </div>
   </div>
   <div class="kv readout" id="plot-readout"></div>
-  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. Each strip fits its value axis to the samples on screen until you zoom it: <b>−</b>/<b>+</b>/<b>Auto</b> at the right of its title or Shift+wheel over the trace, after which a drag also moves it up and down. The tracking-error strip shows the <i>position</i> error or the <i>torque</i> error (reported by the motor − commanded). <b>Compare</b> overlays a second recording, B, dashed on the same axes with its start on the start of A; <b>offset</b> or Shift+drag on a trace slides B in time, and the readouts, the hover values and the spectrum then show A and B together. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
+  <p class="hint">The same strips as the pendant's live scope, for a CSV written by its <b>Record</b> button: every sample of one joint. <b>Drag</b> a trace to move through time, <b>Ctrl+wheel</b> or <b>−</b>/<b>+</b> to zoom (keys: ← → move by half a window, − + zoom), <b>Fit</b> shows the whole run; hovering a trace reads the sample under the pointer. Each strip fits its value axis to the samples on screen until you zoom it: <b>−</b>/<b>+</b>/<b>Auto</b> at the right of its title or Shift+wheel over the trace, after which a drag also moves it up and down. The tracking-error strip shows the <i>position</i> error or the <i>torque</i> error (reported by the motor − commanded). The torque strip also shows the feed-forward the command contains, and the spectrum offers its gravity, friction and inertia terms one by one, to tell a wobble the feed-forward drives from one the feedback drives. <b>Compare</b> overlays a second recording, B, dashed on the same axes with its start on the start of A; <b>offset</b> or Shift+drag on a trace slides B in time, and the readouts, the hover values and the spectrum then show A and B together. A hole in a trace means samples were missing. A recording that spans a server restart has more than one <i>run</i> (the clock starts again from zero); each is listed on its own. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics.</p>
 </section>
 
 <script src="dsp.js"></script>
