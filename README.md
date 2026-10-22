@@ -28,6 +28,9 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
 robot_teaching/
 ├── config/teaching.yaml            limits, free-drive gains, jog steps, gripper positions
 ├── programs/                       saved programs (JSON); example_pick_place.json included
+├── analysis/scope_analysis.py      tracking-error / ripple figures from scope recordings in data/
+│                                   (`uv run --with scipy --with matplotlib python analysis/scope_analysis.py`)
+├── docs/                           planner validation and the J3 tracking-error / ripple analysis write-up
 ├── src/robot_teaching/
 │   ├── model.py                    Pinocchio model wrapper: FK, IK, Jacobian, g(q), limits
 │   ├── program.py                  TaughtPoint / Program / ProgramStore (JSON)
