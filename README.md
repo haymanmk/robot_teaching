@@ -150,7 +150,9 @@ Each legend entry has a checkbox: untick a trace to hide it for the moment, and 
 the traces left; a reload shows all of them again. The bar under a strip can be dragged to set
 its height, which is kept across reloads; a double-click on the bar restores it. It is the tool for telling
 stick-slip (a sawtooth in the error at low speed) from bus trouble (gaps on every joint) from
-low damping (a 3–4 Hz ring on one joint). **−** / **+** (or Ctrl+wheel over a trace) zoom the
+low damping (a 3–4 Hz ring on one joint). `docs/natural_frequency.md` derives that ring
+frequency from the MIT gains and the URDF inertia and shows how to identify the motors' rotor
+inertia from it. **−** / **+** (or Ctrl+wheel over a trace) zoom the
 window between 0.5 s and 60 s, the length of the history the server keeps. **Pause** freezes
 the traces: the time axis then shows the controller clock and dragging a trace looks back in
 time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
