@@ -252,7 +252,7 @@ feedforward:
 ```
 
 Both files are read when the server starts. The gains can be re-read without a restart:
-edit the YAML and press **Reload gains** (Scope card) or `POST /api/gains/reload`. That
+edit the YAML and press **Reload gains** (top bar, next to Connect) or `POST /api/gains/reload`. That
 re-applies the hold, free-drive and gripper kp/kd, `free_drive.tau_scale`, the free-drive
 thresholds, the friction feed-forward and the inverse-dynamics feed-forward, fading the gains in over
 `free_drive.transition_duration`; it works in hold, free drive and while disconnected, not

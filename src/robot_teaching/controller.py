@@ -456,6 +456,7 @@ class TeachController:
             return "[" + " ".join(f"{x:g}" for x in np.asarray(a).reshape(-1)) + "]"
         return (f"hold kp {vec(self._hold_kp)} kd {vec(self._hold_kd)}; "
                 f"free drive kp {self._free_kp[0]:g} kd {self._free_kd[0]:g}; "
+                f"gravity tau_scale {vec(self._tau_scale)}; "
                 f"friction {vec(self._coulomb)} N·m; inertia feed-forward x{self._ff_scale:g} "
                 f"armature {vec(self._armature)}; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}; "
                 f"feed-forward {self._feedforward_summary()}")

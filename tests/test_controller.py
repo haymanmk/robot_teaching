@@ -327,10 +327,11 @@ def test_trace_records_every_tick(rig, cfg):
     assert len(ctl.trace_since(1, chunk["seq"])["t"]) == 10
 
 
-def _with_gains(cfg, hold_kp=None, hold_kd=None, free_kp=None, coulomb=None):
+def _with_gains(cfg, hold_kp=None, hold_kd=None, free_kp=None, coulomb=None, tau_scale=None):
     hold = dataclasses.replace(cfg.hold, kp=cfg.hold.kp if hold_kp is None else hold_kp,
                                kd=cfg.hold.kd if hold_kd is None else hold_kd)
-    fd = dataclasses.replace(cfg.free_drive, kp=cfg.free_drive.kp if free_kp is None else free_kp)
+    fd = dataclasses.replace(cfg.free_drive, kp=cfg.free_drive.kp if free_kp is None else free_kp,
+                             tau_scale=cfg.free_drive.tau_scale if tau_scale is None else tau_scale)
     fr = dataclasses.replace(cfg.friction, coulomb=cfg.friction.coulomb if coulomb is None else coulomb)
     return dataclasses.replace(cfg, hold=hold, free_drive=fd, friction=fr)
 
@@ -358,6 +359,19 @@ def test_reload_gains_fades_in_hold_and_free_drive(rig, cfg):
     assert ctl.reload_gains(_with_gains(cfg, hold_kp=[target] * 6, free_kp=2.0))[0]
     s = settle(sim, ctl, 400)
     assert s.mode == Mode.FREE_DRIVE.value and s.gains_settled and np.allclose(sim._cmd[2], 2.0)
+
+
+def test_reload_gains_rescales_gravity_compensation(rig, cfg):
+    sim, ctl = rig
+    s = settle(sim, ctl, 100)
+    tau_g0 = s.tau_g.copy()
+    assert np.max(np.abs(tau_g0)) > 0.5, "the L pose has gravity torque to compensate"
+    ok, msg = ctl.reload_gains(_with_gains(cfg, tau_scale=[0.5] * 6))
+    assert ok and "tau_scale [0.5 0.5 0.5 0.5 0.5 0.5]" in msg, msg
+    s = settle(sim, ctl, 2)
+    assert np.allclose(s.tau_g, 0.5 * ctl.model.gravity(s.q), atol=1e-6), "the gravity term uses the reloaded scale at once"
+    assert np.allclose(sim._cmd[4], s.tau_g, atol=0.05), "and it is what the motors receive in hold"
+    assert ctl.gains()["free_drive"]["tau_scale"] == [0.5] * 6
 
 
 def test_reload_gains_rules(cfg, model):

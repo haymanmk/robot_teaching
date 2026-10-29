@@ -18,6 +18,7 @@
   <div class="actions">
     <button id="btn-connect" class="btn big blue" title="open the CAN bus, switch the motors to MIT mode, enable them and hold">Connect</button>
     <button id="btn-disconnect" class="btn big hidden" title="move the arm home, then close the bus (the motors are disabled)">Disconnect</button>
+    <button id="btn-reload-gains" class="btn big" title="re-read kp/kd, tau_scale (gravity compensation) and friction from config/teaching.yaml, its .local override and the hardware YAML, and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
     <button id="btn-free" class="btn big amber">Free drive</button>
     <button id="btn-hold" class="btn big green">Hold</button>
     <button id="btn-stop" class="btn big" title="Space or Esc">Stop motion <kbd>Space</kbd></button>
@@ -98,7 +99,7 @@
       <li><b>Stop motion</b> (button, <kbd>Space</kbd> or <kbd>Esc</kbd>) ramps the speed down and holds; <b>E-STOP</b> cuts motor torque — a loaded arm will fall.</li>
       <li>Keyboard stops only work while this page has focus; keep the hardware e-stop within reach.</li>
       <li>Start free drive from a clearance pose; contact with the table corrupts the gravity model.</li>
-      <li><b>Reload gains</b> (Scope card) re-reads the hold, free-drive and gripper kp/kd, <code>tau_scale</code> and the friction feed-forward from the YAML files and fades them in; no restart. Limits and the home position still need one.</li>
+      <li><b>Reload gains</b> (top bar) re-reads the hold, free-drive and gripper kp/kd, the gravity compensation <code>tau_scale</code> and the friction feed-forward from the YAML files and fades them in; no restart. Limits and the home position still need one.</li>
     </ul>
   </section>
   </div>
@@ -192,7 +193,6 @@
         <span class="kv" id="scope-readout"></span>
         <a class="btn" href="/plot" target="_blank" rel="noopener" title="open a recorded CSV file in the offline plotter (a page that also works from disk, without the server)">Plot…</a>
         <button class="btn" id="scope-reset-max" title="forget the largest tracking error seen so far; it is otherwise kept from the moment the joint was picked, across reconnects and server restarts">Reset max</button>
-        <button class="btn" id="btn-reload-gains" title="re-read kp/kd, tau_scale and friction from config/teaching.yaml and the hardware YAML and fade them in; works in hold, free drive or disconnected, not during playback">Reload gains</button>
       </div>
     </div>
     <div class="scope-grid">
