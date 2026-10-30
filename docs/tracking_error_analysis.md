@@ -162,6 +162,10 @@ data in the angle domain, one window per stroke, where the ripple is a single sh
    stroke); stiction does. 1.2 N·m is three times the configured Coulomb value, and the
    friction feed-forward vanishes with the commanded velocity exactly when break-away is
    needed, so the term is under-sized for the dwell and absent at the moment it matters.
+   *Revised 2026-10-30, see the before/after section:* the gravity re-scale alone removed
+   about 0.9 N·m of that 1.2 N·m, so most of the sag was a gravity-model shortfall after
+   all; what remains at the dwells is a symmetric 0.3 to 0.5 N·m stiction plus a residual
+   gravity-shape error.
 5. **The vibration is a position-locked ripple, not a resonance.** It sits at 19.8
    cycles per rad of joint travel (about 125 per revolution, period about 3°) at every
    speed and in every feed-forward condition. Its frequency in Hz is 19.8 × joint
@@ -178,6 +182,75 @@ data in the angle domain, one window per stroke, where the ripple is a single sh
    per output revolution; the vendor's pole-pair count times the gear ratio would say
    which. It is a candidate for a position-indexed compensation table rather than for
    any of the trajectory feed-forward terms.
+
+## Before and after the cogging calibration and gravity re-scaling (2026-10-29)
+
+**What changed on the arm.** The motor's anti-cogging calibration was run on J3, and the
+gravity feed-forward was re-scaled per joint (`free_drive.tau_scale`, 1.152 on J3, so the
+gravity torque over this stroke rose from 5.9 to 6.9 N·m). The friction term stayed at
+0.37 N·m. Four of the nine cells were recorded again on the same stroke
+(`data/20261029/short/`): gravity only and gravity + friction, at 100 % and 25 % speed.
+The script writes the comparison when that folder exists.
+
+![after_error](../analysis/figures/after_error.png)
+
+![after_breakdown](../analysis/figures/after_breakdown.png)
+
+![after_ripple](../analysis/figures/after_ripple.png)
+
+**Tracking error, RMS in mrad, before → after:**
+
+| condition | RMS | dwell | stroke lag | ripple |
+|---|---|---|---|---|
+| 100 %, gravity | 4.07 → 3.52 | 3.81 → 2.88 | 4.16 → 3.87 | 0.52 → 0.49 |
+| 100 %, gravity + friction | 2.54 → 1.60 | 2.50 → 0.73 | 2.28 → 1.76 | 0.48 → 0.45 |
+| 25 %, gravity | 4.48 → 3.31 | 5.14 → 3.82 | 3.62 → 3.06 | 1.93 → 1.27 |
+| 25 %, gravity + friction | 3.49 → 1.97 | 4.85 → 2.96 | 1.68 → 0.83 | 1.90 → 1.27 |
+
+**Error at the dwells, mean in mrad (feedback torque beyond the gravity model in N·m):**
+
+| condition | lower dwell before → after | upper dwell before → after |
+|---|---|---|
+| 100 %, gravity + friction | −1.4 (+0.13) → +0.3 (−0.02) | −3.7 (+0.57) → −1.2 (+0.16) |
+| 25 %, gravity | +0.2 (−0.02) → +2.4 (−0.35) | −8.4 (+1.25) → −5.4 (+0.80) |
+| 25 %, gravity + friction | −0.3 (+0.03) → +1.8 (−0.27) | −7.9 (+1.21) → −4.5 (+0.69) |
+
+1. **The bias is gone.** The mean error moved from about −2 mrad to within 0.1 mrad of
+   zero in every cell; the gravity re-scale did that. With friction compensation the
+   RMS fell by 37 % at full speed and 44 % at quarter speed. Median and mean now agree
+   to a few tenths of a millirad, so the distribution is no longer lopsided.
+2. **The ripple fell by a third at low speed and not at all at full speed.** At 25 % the
+   20 cycle-per-rad line lost about half its power (ripple RMS 1.9 → 1.27 mrad) and its
+   second harmonic at 40 cycles per rad fell about sixfold; the pattern against joint
+   angle is the same shape, smaller. At 100 % the ripple was already filtered by the
+   loop (0.5 mrad) and stays there. The calibration took out part of the cogging, not
+   all of it: the remaining 1.27 mrad at 25 % is now the largest single component of
+   that cell's 1.97 mrad RMS.
+3. **The dwell error halved, and its character changed.** Before, the joint sat on
+   target at the lower dwell and 8 mrad short at the upper one, and the feedback had to
+   add 1.2 N·m there. After the re-scale the upper sag is 4.5 to 5.4 mrad (0.7 to
+   0.8 N·m) and the lower dwell now overshoots by about 2 mrad at 25 % with the feedback
+   pulling 0.3 N·m *back*. So the earlier reading was half right: about 0.9 N·m of the
+   upper shortfall was the gravity model being 15 % low, and a scalar scale fixed that.
+   What is left is symmetric, 0.3 to 0.5 N·m of stiction that stops the joint short
+   in both directions at low speed, plus a residual gravity error of opposite sign at
+   the two ends (too much at the lower pose, too little at the upper), which a single
+   scale cannot fit and points at the model's angle dependence rather than its size.
+   At 100 % speed with friction compensation the dwells are now within 1.2 mrad
+   because the arm arrives with enough momentum to carry through the stiction.
+4. **The stroke lag also improved** (2.3 → 1.8 mrad at 100 %, 1.7 → 0.8 mrad at 25 %
+   with friction on): with the gravity model closer to the truth, the feedback no
+   longer carries a standing offset through the stroke.
+5. **Ranking after the change, with friction compensation:** at 25 % speed the ripple
+   (1.27) and the dwell (2.96 RMS, dominated by the stiction stops) remain; at 100 %
+   the stroke lag (1.76) is what is left. Each cell is still a single recording.
+
+**Next.** The remaining stiction at the dwells is the same 0.3 to 0.5 N·m in both
+directions, so a break-away term or a higher `friction.coulomb` (the quasi-static level
+measured earlier was 0.55 to 0.6 N·m) is the next lever for slow playback; the opposite
+signs of the residual gravity error at the two ends suggest checking the J3 centre of
+mass or the link mass in the model rather than scaling further; and a second
+anti-cogging pass, or a position-indexed table on top of it, would address the ripple.
 
 ## Method notes
 

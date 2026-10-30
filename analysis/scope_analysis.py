@@ -12,6 +12,13 @@ combination from the file name, and writes to analysis/figures/:
   window_length.png      why a time-domain window smears the ripple and the angle domain does not
   summary.csv            the numbers behind the figures
 
+When data/20261029/short/ exists (recordings after the cogging calibration and the gravity
+re-scaling), it also writes the before/after comparison on the cells both sets share:
+
+  after_error.png        mean / median / std and RMS, before beside after
+  after_breakdown.png    dwell, stroke lag and ripple RMS, before beside after
+  after_ripple.png       the ripple against joint angle and its order spectrum, before and after
+
 Run with:  uv run --with scipy --with matplotlib python analysis/scope_analysis.py
 """
 from __future__ import annotations
@@ -34,6 +41,8 @@ from scipy.signal import butter, find_peaks, sosfiltfilt, spectrogram, welch  # 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(os.path.dirname(HERE), "data")
 OUT = os.path.join(HERE, "figures")
+AFTER = os.path.join(DATA, "20261029", "short")
+BEFORE_COLOR, AFTER_COLOR = "#8a8984", "#2a78d6"
 
 SPEEDS = [100, 50, 25]                      # rows of the grid, fastest first
 FFS = ["g", "gf", "gfi"]                    # columns of the grid
@@ -434,6 +443,105 @@ def fig_window(r, k0):
     fig.savefig(os.path.join(OUT, "window_length.png"), dpi=150); plt.close(fig)
 
 
+# ----------------------------------------------------------------------------- before / after
+
+def cond_label(speed, ff):
+    terms = FF_LABEL[ff].replace(" + ", " +\n")
+    return f"{speed}%\n" + terms
+
+
+def fig_after_error(before, after, cells):
+    x = np.arange(len(cells))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2), sharex=True)
+    for off, sets, color, lab in ((-0.16, before, BEFORE_COLOR, "before (2026-10-20)"), (0.16, after, AFTER_COLOR, "after (2026-10-29)")):
+        e = [sets[c]["err_rad"] * 1e3 for c in cells]
+        m = np.array([v.mean() for v in e]); sd = np.array([v.std() for v in e])
+        med = np.array([np.median(v) for v in e]); rms = np.array([np.sqrt(np.mean(v ** 2)) for v in e])
+        axes[0].errorbar(x + off, m, yerr=sd, fmt="o", color=color, ms=6, capsize=7, lw=1.6, label=lab)
+        axes[0].plot(x + off, med, "D", color=color, ms=7, markerfacecolor="#fcfcfb", markeredgewidth=1.6)
+        axes[1].plot(x + off, rms, "o", color=color, ms=7, label=lab)
+        for xi, v in zip(x + off, rms):
+            axes[1].text(xi, v + 0.1, f"{v:.2f}", ha="center", va="bottom", fontsize=8, color=INK2)
+    axes[0].axhline(0, color=MUTED, lw=0.6)
+    axes[0].set_title("Mean (dot), median (diamond), whiskers at ±1 std", loc="left")
+    axes[1].set_title("RMS tracking error", loc="left")
+    for ax in axes:
+        ax.set_xticks(x, [cond_label(*c) for c in cells]); ax.set_xlim(-0.6, len(cells) - 0.4)
+        ax.set_ylabel("error (mrad)")
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+        ax.grid(True, axis="y", which="minor", color=GRID, linestyle="--", linewidth=0.6)
+        ax.tick_params(axis="y", which="minor", length=2)
+    axes[1].set_ylim(0, 5.2); axes[1].legend(loc="upper right")
+    fig.suptitle("J3 tracking error before and after the cogging calibration and gravity re-scaling (short stroke)",
+                 x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(os.path.join(OUT, "after_error.png"), dpi=150); plt.close(fig)
+
+
+def fig_after_breakdown(before, after, cells):
+    x = np.arange(len(cells))
+    titles = [("dwell", "At the dwells"), ("lag", "Stroke lag while moving"), ("ripple", "Ripple while moving")]
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8), sharey=True)
+    for ax, (key, title) in zip(axes, titles):
+        for off, sets, color, lab in ((-0.16, before, BEFORE_COLOR, "before"), (0.16, after, AFTER_COLOR, "after")):
+            vals = np.array([error_breakdown(sets[c])[key] for c in cells])
+            ax.plot(x + off, vals, "o", color=color, ms=7, label=lab)
+            for xi, v in zip(x + off, vals):
+                ax.text(xi, v + 0.12, f"{v:.2f}", ha="center", va="bottom", fontsize=8, color=INK2)
+        ax.set_title(title, loc="left")
+        ax.set_xticks(x, [cond_label(*c) for c in cells]); ax.set_xlim(-0.6, len(cells) - 0.4)
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+        ax.grid(True, axis="y", which="minor", color=GRID, linestyle="--", linewidth=0.6)
+        ax.tick_params(axis="y", which="minor", length=2)
+    axes[0].set_ylabel("RMS error (mrad)"); axes[0].set_ylim(0, 6); axes[2].legend(loc="upper right")
+    fig.suptitle("Where the error comes from, before and after", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(os.path.join(OUT, "after_breakdown.png"), dpi=150); plt.close(fig)
+
+
+def fig_after_ripple(before, after, cells):
+    qgrid = np.arange(0.745, 1.10, DQ)
+    show = [c for c in cells if c[1] == "gf"]
+    fig, axes = plt.subplots(2, len(show), figsize=(7 * len(show), 8.5))
+    for j, c in enumerate(show):
+        ax = axes[0, j]
+        for sets, color, lab in ((before, BEFORE_COLOR, "before"), (after, AFTER_COLOR, "after")):
+            fwd, bwd = stroke_residuals(sets[c], qgrid)
+            rms = np.sqrt(np.nanmean(np.array(fwd + bwd) ** 2)) * 1e3
+            for row in fwd:
+                ax.plot(qgrid, row * 1e3, color=color, lw=0.4, alpha=0.2)
+            ax.plot(qgrid, np.nanmean(fwd, axis=0) * 1e3, color=color, lw=1.6, label=f"{lab}, forward strokes (ripple RMS {rms:.2f} mrad)")
+        ax.set_title(f"{c[0]}% speed, {FF_LABEL[c[1]]}: ripple against joint angle", loc="left")
+        ax.set_xlabel("measured joint angle q (rad)"); ax.set_ylabel("ripple (mrad)"); ax.set_ylim(-4.5, 4.5)
+        ax.legend(loc="lower left", fontsize=8)
+        ax = axes[1, j]
+        for sets, color, lab in ((before, BEFORE_COLOR, "before"), (after, AFTER_COLOR, "after")):
+            k, p, L = order_spectrum(sets[c])
+            ax.semilogy(k, p * 1e6, color=color, lw=1.4, label=lab)
+        ax.set_xlim(0, 60); ax.set_ylim(1e-4, 1e1)
+        ax.set_xlabel("order (cycles per rad of joint travel)"); ax.set_ylabel("ripple power (mrad²/(cycle/rad))")
+        ax.set_title("Angle-domain spectrum", loc="left"); ax.legend(loc="upper right")
+    fig.suptitle("The ripple before and after the cogging calibration", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(os.path.join(OUT, "after_ripple.png"), dpi=150); plt.close(fig)
+
+
+def compare_after(short, recs):
+    if not os.path.isdir(AFTER):
+        return
+    after = {}
+    for path in sorted(glob.glob(os.path.join(AFTER, "scope_J3_*.csv"))):
+        speed, ff, _ = parse(os.path.basename(path))
+        r = prepare(load(path)); after[speed, ff] = r
+        recs[path] = (speed, ff, "short (after)", r)
+    cells = [c for c in [(100, "g"), (100, "gf"), (25, "g"), (25, "gf")] if c in after and c in short]
+    if not cells:
+        return
+    fig_after_error(short, after, cells)
+    fig_after_breakdown(short, after, cells)
+    fig_after_ripple(short, after, cells)
+
+
 # ----------------------------------------------------------------------------- main
 
 def main():
@@ -455,6 +563,7 @@ def main():
     ripple_rms = fig_ripple_vs_angle(short)
     peak_order, k0 = fig_spectrum(short, ripple_rms)
     fig_window(short[50, "g"], k0)
+    compare_after(short, recs)
 
     with open(os.path.join(OUT, "summary.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
