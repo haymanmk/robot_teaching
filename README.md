@@ -30,7 +30,8 @@ robot_teaching/
 ├── programs/                       saved programs (JSON); example_pick_place.json included
 ├── analysis/scope_analysis.py      tracking-error / ripple figures from scope recordings in data/
 │                                   (`uv run --with scipy --with matplotlib python analysis/scope_analysis.py`)
-├── docs/                           planner validation and the J3 tracking-error / ripple analysis write-up
+├── docs/                           planner validation, the J3 tracking-error / ripple analysis, the joints'
+│                                   natural frequencies, and the disturbance-observer design note
 ├── src/robot_teaching/
 │   ├── model.py                    Pinocchio model wrapper: FK, IK, Jacobian, g(q), limits
 │   ├── program.py                  TaughtPoint / Program / ProgramStore (JSON)
@@ -316,3 +317,7 @@ not installed.
   not implemented.
 * The vendor's position request every cycle plus the command frame is near the CAN
   bandwidth at 500 Hz with 7 motors; lower `control.rate` if the bus saturates.
+* No external-force estimate and no admittance control yet. `docs/disturbance_observer.md`
+  is the design note for a sensorless estimate (a disturbance observer on the joint
+  torques): what the published design gives on this arm, the concerns, and the suggested
+  form and order of work. Nothing in it is implemented.
