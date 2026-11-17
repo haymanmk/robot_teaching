@@ -23,6 +23,9 @@ limits:
   cartesian_angular_velocity: 0.8        # rad/s
   cartesian_angular_acceleration: 2.0    # rad/s^2
   joint_position_margin: 0.02            # rad kept inside the URDF joint limits
+  # An arm resting on a joint limit (the home pose) reads slightly past it. A move may start
+  # up to this far outside; it opens with a short joint move back onto the limit.
+  start_tolerance: 0.05                  # rad
   planning_dt: 0.01                      # s, planner sample spacing (interpolated at control rate)
   linear_blend_radius: 0.02              # m, how far before/after a blended linear point the corner is cut
 

@@ -61,8 +61,15 @@ def plan_program(
     if problems:
         raise PlanningError("; ".join(problems))
     q_start = np.asarray(q_start, dtype=float)[:n]
-    if not model.within_limits(q_start, 0.0):
-        raise PlanningError("the arm is outside its joint limits; jog it back before playing")
+    # An arm resting on a joint limit reads a little past it (encoder noise, sag: the home
+    # pose has joints on their limit). Within the tolerance that is not an error: the plan
+    # opens with a short joint move back onto the limit and continues from there.
+    q_inside = model.clamp(q_start, 0.0)
+    overshoot = float(np.max(np.abs(q_start - q_inside)))
+    if overshoot > float(lim.start_tolerance) + 1e-9:
+        j = int(np.argmax(np.abs(q_start - q_inside)))
+        raise PlanningError(f"the arm is outside its joint limits (joint {j + 1} by {overshoot:.3f} rad); "
+                            "jog it back before playing")
 
     if loop and len(points) > 1:
         # Closing move: joint motion back to the first point with the first point's speed.
@@ -75,6 +82,12 @@ def plan_program(
     point_times: list[float] = []
     elapsed = 0.0
     q_cur = q_start.copy()
+    if overshoot > 1e-6:
+        res = plan_joint_path(np.vstack([q_start, q_inside]), [True, True], vmax, amax, dt, [1.0])
+        pieces.append(Trajectory(res.t, res.q, res.qd, qdd=res.qdd))
+        elapsed += pieces[-1].duration
+    if overshoot > 0.0:
+        q_cur = q_inside.copy()
 
     joint_block: list[TaughtPoint] = []
     joint_stops: list[bool] = []

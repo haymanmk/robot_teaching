@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -254,3 +256,23 @@ def test_trajectory_carries_acceleration(model, cfg, limits):
     assert np.allclose(traj.sample_full(traj.duration + 1.0)[2], 0.0)
     # Pieces built without acceleration data (holds) default to zero.
     assert np.all(Trajectory(np.array([0.0, 1.0]), np.zeros((2, 1)), np.zeros((2, 1))).qdd == 0.0)
+
+
+def test_move_may_start_slightly_past_a_joint_limit(model, cfg):
+    """Resting at home the encoders read a few mrad past the limit of joints 2 and 3; the plan leads back in."""
+    start = np.array([0.0, -0.004, -0.002, 0.0, 0.0, 0.0])
+    for motion in ("joint", "linear"):
+        prog = Program()
+        prog.add(TaughtPoint(q=[0.0, 0.25, 0.35, 0.0, 0.0, 0.0], motion=motion, speed=0.5))
+        traj = plan_program(model, prog, start, cfg, gripper_start=0.0)
+        assert np.allclose(traj.q[0], start) and np.allclose(traj.q[-1], prog.points[0].q)
+        assert np.allclose(traj.qd[0], 0.0) and np.max(np.abs(np.diff(traj.q, axis=0))) < 0.02
+        assert traj.point_times[0] == pytest.approx(traj.duration)
+    # Home itself (a zero-length move once back on the limit) plans too.
+    home = Program()
+    home.add(TaughtPoint(q=[0.0] * 6, motion="joint"))
+    no_margin = dataclasses.replace(cfg, limits=dataclasses.replace(cfg.limits, joint_position_margin=0.0))
+    traj = plan_program(model, home, start, no_margin, gripper_start=0.0)
+    assert np.allclose(traj.q[-1], 0.0)
+    with pytest.raises(PlanningError, match="joint 2 by 0.200 rad"):
+        plan_program(model, prog, np.array([0.0, -0.2, 0.0, 0.0, 0.0, 0.0]), cfg, gripper_start=0.0)

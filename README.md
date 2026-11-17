@@ -222,7 +222,7 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 | section | what |
 |---|---|
 | `control` | setpoint rate (500 Hz, matching the vendor config) and UI stream rate |
-| `limits` | per-joint velocity / acceleration at speed 1.0, Cartesian speed limits, joint-limit margin, planner sample spacing |
+| `limits` | per-joint velocity / acceleration at speed 1.0, Cartesian speed limits, joint-limit margin, how far past a joint limit a move may start (`start_tolerance`: resting at home, joints 2 and 3 sit on their limit and read slightly past it; the plan then opens with a short joint move back onto the limit), planner sample spacing |
 | `free_drive` | compliant gains, integral term, `tau_scale` per joint, release / re-lock thresholds, velocity filter |
 | `hold` | stiff gains (null = the vendor's per-joint MIT gains) |
 | `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; applied while `feedforward.friction` is on, 0 disables a joint |

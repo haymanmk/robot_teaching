@@ -51,6 +51,7 @@ class LimitsConfig:
     cartesian_angular_velocity: float = 0.8
     cartesian_angular_acceleration: float = 2.0
     joint_position_margin: float = 0.02
+    start_tolerance: float = 0.05         # rad past a joint limit from which a move may still start
     planning_dt: float = 0.01
     linear_blend_radius: float = 0.02     # m, corner cut at a pass-through linear point
 
