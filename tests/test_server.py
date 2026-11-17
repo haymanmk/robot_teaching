@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from robot_teaching.backend.sim import SimBackend
-from robot_teaching.config import load_config
+from robot_teaching.config import load_config, resolve_vector
 from robot_teaching.controller import TeachController
 from robot_teaching.program import ProgramStore
 from robot_teaching.server import create_app
@@ -47,18 +47,23 @@ def test_config_and_state(client):
     assert client.get("/").status_code == 200
 
 
-def test_feedforward_switches(client):
-    assert client.get("/api/feedforward").json() == {"gravity": True, "friction": False, "inertia": False}
+def test_feedforward_switches(client, cfg):
+    assert client.get("/api/feedforward").json() == {"gravity": True, "friction": False, "inertia": False, "observer": False}
     r = client.post("/api/feedforward", json={"inertia": True})
     assert r.status_code == 200, r.text
-    assert r.json()["feedforward"] == {"gravity": True, "friction": False, "inertia": True}
-    assert r.json()["message"] == "feed-forward gravity on, friction off, inertia on"
+    assert r.json()["feedforward"] == {"gravity": True, "friction": False, "inertia": True, "observer": False}
+    assert r.json()["message"] == "feed-forward gravity on, friction off, inertia on, observer off"
     g = client.get("/api/gains").json()["feedforward"]
     assert g["inertia"] is True and g["friction"] is False and g["inertia_scale"] == 1.0
     client.sim.step(5)
-    assert client.get("/api/state").json()["state"]["feedforward"] == {"gravity": True, "friction": False, "inertia": True}
+    assert client.get("/api/state").json()["state"]["feedforward"] == {"gravity": True, "friction": False, "inertia": True, "observer": False}
     assert client.post("/api/feedforward", json={"friction": "maybe"}).status_code == 422
     assert client.post("/api/feedforward", json={}).json()["feedforward"]["inertia"] is True, "nothing given: nothing changes"
+    r = client.post("/api/feedforward", json={"observer": True})
+    assert r.json()["feedforward"]["observer"] is True and r.json()["message"].endswith("observer on")
+    assert client.get("/api/gains").json()["observer"] == {
+        "bandwidth": resolve_vector(cfg.observer.bandwidth, 6, "bandwidth").tolist(),
+        "max_torque": float(cfg.observer.max_torque), "torque": cfg.observer.torque}
 
 
 def test_plotter_page_is_served(client):
@@ -153,7 +158,8 @@ def test_websocket_trace_selection(client):
         else:
             pytest.fail("no trace chunk after selecting a joint")
         tr = msg["trace"]
-        assert len(tr["tau_g"]) == len(tr["t"]) == len(tr["tau_f"]) == len(tr["tau_i"]), "the feed-forward terms ride along"
+        assert len(tr["tau_g"]) == len(tr["t"]) == len(tr["tau_f"]) == len(tr["tau_i"]) == len(tr["tau_o"]), "the feed-forward terms ride along"
+        assert len(tr["tau_d"]) == len(tr["t"]), "and the observer's estimate"
         assert tr["joint"] == 2 and len(tr["t"]) > 0 and len(tr["q"]) == len(tr["t"]) == len(tr["tau_cmd"])
         assert isinstance(tr["epoch"], float) and tr["epoch"] > 0
         assert tr["q"][-1] == pytest.approx(msg["state"]["q"][2], abs=1e-3)

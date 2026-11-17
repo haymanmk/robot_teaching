@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const ZOOMS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 60, 120, 300, 600, 1800, 3600];   // s, the zoom steps (Fit goes beyond)
   const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
-  const FFT_UNITS = { err: "°", tau_err: "N·m", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m", tau_g: "N·m", tau_f: "N·m", tau_i: "N·m" };
+  const FFT_UNITS = { err: "°", tau_err: "N·m", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m", tau_g: "N·m", tau_f: "N·m", tau_i: "N·m", tau_o: "N·m", tau_d: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment, as in the live scope
   const GAP = scopeDraw.GAP;
   const DASH = [4, 3], B_ALPHA = 0.7;                            // the comparison recording: dashed, a little lighter, the same hues
@@ -311,7 +311,7 @@
   function draw() {
     const css = getComputedStyle($("scope-card"));
     const blue = css.getPropertyValue("--scope-cmd").trim() || "#3b82f6", amber = css.getPropertyValue("--scope-meas").trim() || "#d95926", accent = css.getPropertyValue("--scope-err").trim() || "#6ea8fe";
-    const green = css.getPropertyValue("--scope-ff").trim() || "#199e70";
+    const green = css.getPropertyValue("--scope-ff").trim() || "#199e70", purple = css.getPropertyValue("--scope-obs").trim() || "#cc79a7";
     applyHeights();
     $("plot-zoom-in").disabled = !cur || view.W <= ZOOMS[0] + 1e-9;
     $("plot-zoom-out").disabled = !cur || view.W >= runSpan() - 1e-9;
@@ -349,7 +349,7 @@
     // Without a comparison the error strip has one trace and no legend, so it is always drawn.
     const errSeries = bs ? shown(bSeries(errCol, accent, "b_err").concat([aSeries(errCol, accent, "err")])) : [aSeries(errCol, accent, "err")];
     frames.err = scopeDraw.drawStrip($("plot-err"), axis, errSeries, { symmetric: true, minSpan: errSig === "tau" ? 0.05 : 0.1, cursor: cursorT, range: yz.err });
-    frames.tau = scopeDraw.drawStrip($("plot-tau"), axis, shown(bSeries("tau_ff", green, "b_tau_ff").concat(bSeries("tau_cmd", blue, "b_tau_cmd"), bSeries("tau_meas", amber, "b_tau_meas"), [aSeries("tau_ff", green, "tau_ff"), aSeries("tau_cmd", blue, "tau_cmd"), aSeries("tau_meas", amber, "tau_meas")])), { symmetric: true, minSpan: 0.5, cursor: cursorT, range: yz.tau });
+    frames.tau = scopeDraw.drawStrip($("plot-tau"), axis, shown(bSeries("tau_ff", green, "b_tau_ff").concat(bSeries("tau_cmd", blue, "b_tau_cmd"), bSeries("tau_meas", amber, "b_tau_meas"), bSeries("tau_d", purple, "b_tau_d"), [aSeries("tau_ff", green, "tau_ff"), aSeries("tau_cmd", blue, "tau_cmd"), aSeries("tau_meas", amber, "tau_meas"), aSeries("tau_d", purple, "tau_d")])), { symmetric: true, minSpan: 0.5, cursor: cursorT, range: yz.tau });
     showYSpans();
     drawOverview(accent);
     if (fft.on) drawSpectrum(run, i0, i1, t, accent, bs);
@@ -390,7 +390,8 @@
       const tm = r.tau_meas[i];
       return `${tag}t ${r.t[i].toFixed(4)} s   commanded ${fmt(r.q_cmd_deg[i], 3)}°   measured ${fmt(r.q_deg[i], 3)}°   error ${fmt(r.err_deg[i], 3)}°   torque ${fmt(r.tau_cmd[i], 3)} N·m`
         + (Number.isFinite(tm) ? ` (motor ${fmt(tm, 3)}, error ${fmt(r.tau_err[i], 3)})` : "")
-        + (Number.isFinite(r.tau_ff[i]) ? `   feed-forward ${fmt(r.tau_ff[i], 3)} (g ${fmt(r.tau_g[i], 3)}, f ${fmt(r.tau_f[i], 3)}, i ${fmt(r.tau_i[i], 3)})` : "");
+        + (Number.isFinite(r.tau_ff[i]) ? `   feed-forward ${fmt(r.tau_ff[i], 3)} (g ${fmt(r.tau_g[i], 3)}, f ${fmt(r.tau_f[i], 3)}, i ${fmt(r.tau_i[i], 3)}${Number.isFinite(r.tau_o[i]) ? `, o ${fmt(r.tau_o[i], 3)}` : ""})` : "")
+        + (Number.isFinite(r.tau_d[i]) ? `   disturbance ${fmt(r.tau_d[i], 3)}` : "");
     };
     const statsLine = (r, a, b, tag) => {
       const s = scopeRecord.summarize(r, a, b);

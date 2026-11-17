@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from robot_teaching.backend.sim import SimBackend
+from robot_teaching.config import resolve_vector
 from robot_teaching.controller import Mode, TeachController, TraceBuffer
 from robot_teaching.planning import plan_program
 from robot_teaching.program import Program, TaughtPoint
@@ -447,7 +448,7 @@ def test_inertia_feedforward_reduces_acceleration_error(cfg, model):
     _, tau_clipped = _tracking(_fast(cfg, armature=armature, inertia_scale=1.0, max_torque=0.1), model, armature)
     assert np.max(tau_clipped) <= 0.1 + 1e-9
     ctl = TeachController(SimBackend(realtime=False, q0=L_POSE, model=model), _fast(cfg, armature=armature))
-    assert ctl.gains()["feedforward"] == {"gravity": True, "friction": True, "inertia": True,
+    assert ctl.gains()["feedforward"] == {"gravity": True, "friction": True, "inertia": True, "observer": False,
                                           "inertia_scale": 1.0, "armature": [armature] * 6, "max_torque": 3.0}
 
 
@@ -462,7 +463,7 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
     ctl = TeachController(sim, base)
     ctl.start()
     s = settle(sim, ctl, 300)
-    assert ctl.feedforward() == {"gravity": True, "friction": False, "inertia": False} == s.feedforward
+    assert ctl.feedforward() == {"gravity": True, "friction": False, "inertia": False, "observer": False} == s.feedforward
     traj = plan_program(ctl.model, _program(), s.q_target, base, gripper_start=s.gripper_target)
     assert ctl.play(traj, speed=1.0, loop=True)[0]
     for _ in range(50):
@@ -471,8 +472,8 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
         assert np.all(s.tau_f == 0.0) and np.all(s.tau_i == 0.0)
         assert np.allclose(sim._cmd[4], s.tau_g), "gravity alone is sent"
     ok, msg = ctl.set_feedforward(friction=True, inertia=True)
-    assert ok and msg == "feed-forward gravity on, friction on, inertia on"
-    assert ctl.feedforward() == {"gravity": True, "friction": True, "inertia": True}
+    assert ok and msg == "feed-forward gravity on, friction on, inertia on, observer off"
+    assert ctl.feedforward() == {"gravity": True, "friction": True, "inertia": True, "observer": False}
     early = np.zeros(ctl.n)
     for _ in range(12):                                   # 0.24 s: half of the 0.5 s ramp at most
         s = settle(sim, ctl, 10)
@@ -487,7 +488,7 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
     assert len(chunk["tau_g"]) == len(chunk["t"]) == len(chunk["tau_f"]) == len(chunk["tau_i"]) == 20
     assert np.allclose(chunk["tau_g"], chunk["tau_g"]) and max(abs(v) for v in chunk["tau_g"]) > 0.0
     ok, msg = ctl.set_feedforward(gravity=False)
-    assert ok and msg == "feed-forward gravity off, friction on, inertia on"
+    assert ok and msg == "feed-forward gravity off, friction on, inertia on, observer off"
     settle(sim, ctl, 300)                                 # the ramp is over
     s = settle(sim, ctl, 1)
     assert s.mode == Mode.PLAYBACK.value and np.allclose(sim._cmd[4], s.tau_f + s.tau_i), "no gravity in the sent torque"
@@ -495,4 +496,148 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
     assert ctl.stop_motion()[0]
     settle(sim, ctl, 400)
     assert ctl.snapshot().mode == Mode.HOLD.value and np.allclose(sim._cmd[4], ctl.snapshot().tau_g), "hold always compensates gravity"
+    ctl.shutdown()
+
+
+# ── disturbance observer as a feed-forward term ────────────────────────────────────────────
+
+def _with_observer(cfg, on=True, **observer):
+    return dataclasses.replace(cfg, feedforward=dataclasses.replace(cfg.feedforward, observer=on),
+                               observer=dataclasses.replace(cfg.observer, **observer))
+
+
+def _observer_rig(cfg, model, **sim_kw):
+    sim = SimBackend(realtime=False, q0=L_POSE, model=model, **sim_kw)
+    ctl = TeachController(sim, cfg)
+    ctl.start()
+    return sim, ctl
+
+
+def _playback_error(sim, ctl, cfg):
+    """Play the test program once; return max |q - q_cmd|, max |tau_o| and max |tau_d| per joint."""
+    s = settle(sim, ctl, 500)
+    traj = plan_program(ctl.model, _program(), s.q_target, cfg, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0)[0]
+    err, tau_o, tau_d = np.zeros(ctl.n), np.zeros(ctl.n), np.zeros(ctl.n)
+    while True:
+        s = settle(sim, ctl, 1)
+        if s.mode != Mode.PLAYBACK.value:
+            break
+        assert np.allclose(sim._cmd[4], s.tau_g + s.tau_f + s.tau_i + s.tau_o), "the sent torque is the sum of the four terms"
+        err = np.maximum(err, np.abs(s.q - s.q_target))
+        tau_o, tau_d = np.maximum(tau_o, np.abs(s.tau_o)), np.maximum(tau_d, np.abs(s.tau_d))
+    return err, tau_o, tau_d
+
+
+def test_observer_estimates_without_feeding_back_by_default(cfg, model):
+    sim, ctl = _observer_rig(cfg, model)
+    assert ctl.feedforward()["observer"] is False
+    err, tau_o, tau_d = _playback_error(sim, ctl, cfg)
+    assert np.all(tau_o == 0.0), "switched off: nothing is added to the torque"
+    # The simulator's joints have 0.3 N·m of Coulomb friction: that is what the estimate finds.
+    assert np.all(tau_d > 0.25) and np.all(tau_d < 0.6), tau_d
+    chunk = ctl.trace_since(2, None, max_samples=50)
+    assert len(chunk["tau_d"]) == len(chunk["tau_o"]) == len(chunk["t"]) == 50 and chunk["tau_d"][-1] is not None
+    s = ctl.snapshot().to_dict()
+    assert len(s["tau_d"]) == len(s["tau_o"]) == 6
+    ctl.shutdown()
+
+
+@pytest.mark.parametrize("torque", ["measured", "commanded"])
+def test_observer_compensation_cuts_playback_error(cfg, model, torque):
+    sim, ctl = _observer_rig(cfg, model)
+    err_off, _, _ = _playback_error(sim, ctl, cfg)
+    ctl.shutdown()
+    on = _with_observer(cfg, torque=torque)
+    sim, ctl = _observer_rig(on, model)
+    err_on, tau_o, tau_d = _playback_error(sim, ctl, on)
+    ctl.shutdown()
+    assert np.max(err_on) < 0.6 * np.max(err_off), (err_off, err_on)
+    assert np.all(err_on <= err_off + 5e-4), (err_off, err_on)          # worse on no joint
+    assert np.allclose(tau_o, tau_d), "fully on and inside the clip, the compensation is the negated estimate"
+
+
+def test_observer_compensation_removes_a_gravity_model_error_in_hold(cfg, model):
+    # The simulated arm is 10 % heavier than the model: the stiff hold sags, the observer sees
+    # the missing torque as a disturbance, and feeding it back takes the sag out.
+    sim, ctl = _observer_rig(cfg, model, gravity_scale=1.1)
+    s = settle(sim, ctl, 1000)
+    sag = np.max(np.abs(s.q - s.q_target))
+    assert sag > 3e-3 and np.all(s.tau_o == 0.0)
+    missing = s.tau_g * (1.1 / np.asarray(ctl.gains()["free_drive"]["tau_scale"]) - 1.0)
+    assert np.allclose(s.tau_d, -missing, atol=0.02), "the estimate is the gravity torque the model lacks"
+    ok, msg = ctl.set_feedforward(observer=True)
+    assert ok and msg.endswith("observer on")
+    s = settle(sim, ctl, 20)                                  # 40 ms into the 0.5 s ramp
+    assert 0.0 < np.max(np.abs(s.tau_o)) < 0.5 * np.max(np.abs(s.tau_d)), "the term ramps in, it does not step"
+    s = settle(sim, ctl, 1500)
+    assert np.max(np.abs(s.q - s.q_target)) < 0.05 * sag
+    assert np.allclose(s.tau_o, -s.tau_d) and np.allclose(sim._cmd[4], s.tau_g + s.tau_o)
+    ctl.shutdown()
+
+
+def test_observer_compensation_is_clipped(cfg, model):
+    on = _with_observer(cfg, max_torque=0.2)
+    sim, ctl = _observer_rig(on, model, gravity_scale=1.1)
+    s = settle(sim, ctl, 1500)
+    assert np.max(np.abs(s.tau_d)) > 0.5, "the disturbance is larger than the clip"
+    assert np.max(np.abs(s.tau_o)) == pytest.approx(0.2)
+    assert ctl.gains()["observer"] == {"bandwidth": resolve_vector(cfg.observer.bandwidth, 6, "bandwidth").tolist(),
+                                       "max_torque": 0.2, "torque": cfg.observer.torque}
+    ctl.shutdown()
+
+
+def test_observer_compensation_fades_out_in_free_drive(cfg, model):
+    on = _with_observer(cfg)
+    sim, ctl = _observer_rig(on, model, gravity_scale=1.1)
+    s = settle(sim, ctl, 1500)
+    assert np.max(np.abs(s.tau_o)) > 0.5
+    assert ctl.free_drive()[0]
+    s = settle(sim, ctl, 30)
+    assert 0.0 < np.max(np.abs(s.tau_o)) < np.max(np.abs(s.tau_d)), "it fades with the gains, it does not drop"
+    s = settle(sim, ctl, int(cfg.free_drive.transition_duration * 500) + 10)
+    assert s.mode == Mode.FREE_DRIVE.value and np.all(s.tau_o == 0.0), "nothing pushes back against the hand"
+    assert ctl.feedforward()["observer"] is True, "the switch keeps its state"
+    sim.push(np.array([0.0, 0.0, 0.0, 0.0, 0.6, 0.0]), 0.3)
+    s = settle(sim, ctl, 100)
+    assert np.all(s.tau_o == 0.0) and abs(s.tau_d[4]) > 0.2, "the push is estimated, not opposed"
+    settle(sim, ctl, 400)
+    assert ctl.hold()[0]
+    s = settle(sim, ctl, int(cfg.free_drive.transition_duration * 500) + 500)
+    assert np.max(np.abs(s.tau_o)) > 0.5, "back in hold the compensation returns"
+    ctl.shutdown()
+
+
+def test_observer_restarts_when_the_motors_were_off(cfg, model):
+    on = _with_observer(cfg)
+    sim, ctl = _observer_rig(on, model, gravity_scale=1.1)
+    s = settle(sim, ctl, 1500)
+    assert np.max(np.abs(s.tau_d)) > 0.5
+    assert ctl.estop()[0]
+    s = settle(sim, ctl, 5)
+    assert np.all(s.tau_d == 0.0) and np.all(s.tau_o == 0.0), "no torque is applied: nothing to estimate"
+    sim.set_state(L_POSE)                                     # wherever the arm ended up, enable from the L pose
+    assert ctl.enable()[0]
+    s = settle(sim, ctl, 1)
+    assert np.all(s.tau_d == 0.0), "the estimate starts again from zero, it does not resume a stale value"
+    s = settle(sim, ctl, 1500)
+    assert np.max(np.abs(s.tau_d)) > 0.5
+    ctl.shutdown()
+
+
+def test_reload_gains_updates_the_observer(cfg, model):
+    sim, ctl = _observer_rig(cfg, model)
+    settle(sim, ctl, 100)
+    ok, msg = ctl.reload_gains(_with_observer(cfg, on=False, bandwidth=[1, 2, 3, 4, 5, 6], max_torque=1.0, torque="commanded"))
+    assert ok and "observer [1 2 3 4 5 6] Hz, ±1 N·m, commanded torque" in msg, msg
+    assert ctl.gains()["observer"] == {"bandwidth": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "max_torque": 1.0, "torque": "commanded"}
+    assert np.allclose(ctl._observer.k, 2 * np.pi * np.arange(1, 7))
+    for bad in ({"torque": "guessed"}, {"bandwidth": 0.0}, {"max_torque": -1.0}):
+        ok, msg = ctl.reload_gains(_with_observer(cfg, **bad))
+        assert not ok and "observer" in msg, msg
+    assert ctl.gains()["observer"]["torque"] == "commanded", "a bad config leaves the observer untouched"
+    # A new gravity scale reaches the observer's model too, so it is not reported as a disturbance.
+    assert ctl.reload_gains(_with_gains(cfg, tau_scale=[1.0] * 6))[0]
+    s = settle(sim, ctl, 1500)
+    assert np.max(np.abs(s.tau_d)) < 0.02, s.tau_d
     ctl.shutdown()

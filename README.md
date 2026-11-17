@@ -17,8 +17,9 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
   velocity-limit curve), tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
   500 Hz in MIT mode with gravity feed-forward, and optionally Coulomb-friction and
   inverse-dynamics feed-forward (the URDF's inertia and Coriolis terms plus a per-joint armature
-  for the reflected rotor inertia, evaluated on the commanded motion), each term switchable live
-  from the pendant. Speed override, loop and smooth stop.
+  for the reflected rotor inertia, evaluated on the commanded motion) and the compensation of a
+  disturbance observer (the joint torque the model does not explain, estimated every tick),
+  each term switchable live from the pendant. Speed override, loop and smooth stop.
 * **Simulator** with the same interface as the hardware, so the UI and planner run and
   are tested without the arm.
 
@@ -33,7 +34,9 @@ robot_teaching/
 ├── docs/                           planner validation, the J3 tracking-error / ripple analysis, the joints'
 │                                   natural frequencies, and the disturbance-observer design note
 ├── src/robot_teaching/
-│   ├── model.py                    Pinocchio model wrapper: FK, IK, Jacobian, g(q), limits
+│   ├── model.py                    Pinocchio model wrapper: FK, IK, Jacobian, g(q), M(q), C(q, q̇), limits
+│   ├── observer.py                 disturbance observers: the joint torque the model does not explain
+│                                   (the controller's fourth feed-forward term; docs/disturbance_observer.md)
 │   ├── program.py                  TaughtPoint / Program / ProgramStore (JSON)
 │   ├── planning/                   quintic profiles, joint spline, Cartesian line, program → trajectory
 │   ├── controller.py               500 Hz state machine: HOLD / FREE_DRIVE / PLAYBACK / DISABLED
@@ -158,8 +161,9 @@ window between 0.5 s and 60 s, the length of the history the server keeps. **Pau
 the traces: the time axis then shows the controller clock and dragging a trace looks back in
 time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
 the selected joint to a CSV file that downloads on **Stop**, with the columns `t_s`, `joint`,
-`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm`, the three feed-forward terms as
-applied `tau_g_Nm`, `tau_f_Nm`, `tau_i_Nm`, and `run` (`run` increments when
+`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm`, the four feed-forward terms as
+applied `tau_g_Nm`, `tau_f_Nm`, `tau_i_Nm`, `tau_o_Nm` (the observer's compensation), the
+observer's disturbance estimate `tau_d_Nm`, and `run` (`run` increments when
 the server restarts, where `t_s` starts again from zero); **Plot…** opens the offline plotter for
 such a file (below). **Spectrum** adds a fourth strip
 with the amplitude spectrum (dB) of the tracking error, a position or a torque over the samples
@@ -193,9 +197,9 @@ strip grows taller with the magnification, up to three times its height; the bar
 can be dragged to set its height by hand instead, until **Auto** restores it. The
 tracking-error strip shows the position error (° measured − commanded) or the torque error
 (N·m reported by the motor − commanded by the MIT law), which the spectrum offers too. The
-torque strip also draws the feed-forward the command contains, and the spectrum offers its
-gravity, friction and inertia terms one by one; a recording made before these columns existed
-still loads, without them.
+torque strip also draws the feed-forward the command contains and the disturbance observer's
+estimate, and the spectrum offers the gravity, friction, inertia and observer terms one by
+one; a recording made before these columns existed still loads, without them.
 **Compare** overlays a second
 recording, B, on the same axes, dashed and a little lighter, with its start on the start of the
 first run; **offset** (or Shift+drag on a trace) slides B in time and **Align starts** puts it
@@ -226,7 +230,8 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 | `free_drive` | compliant gains, integral term, `tau_scale` per joint, release / re-lock thresholds, velocity filter |
 | `hold` | stiff gains (null = the vendor's per-joint MIT gains) |
 | `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; applied while `feedforward.friction` is on, 0 disables a joint |
-| `feedforward` | the start-up state of the three playback feed-forward terms, `gravity` / `friction` / `inertia` (default: gravity only), and the inverse-dynamics term: `inertia_scale`, per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
+| `feedforward` | the start-up state of the four feed-forward terms, `gravity` / `friction` / `inertia` / `observer` (default: gravity only), and the inverse-dynamics term: `inertia_scale`, per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
+| `observer` | the disturbance observer: `bandwidth` of the estimate (Hz, scalar or per joint), `max_torque` clip of its compensation, and `torque`, what it takes as the applied torque (`measured` or `commanded`) |
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
 | `can` | bring the SocketCAN interface up on Connect (`bring_up`) and at which `bitrate` |
@@ -255,7 +260,7 @@ feedforward:
 Both files are read when the server starts. The gains can be re-read without a restart:
 edit the YAML and press **Reload gains** (top bar, next to Connect) or `POST /api/gains/reload`. That
 re-applies the hold, free-drive and gripper kp/kd, `free_drive.tau_scale`, the free-drive
-thresholds, the friction feed-forward and the inverse-dynamics feed-forward, fading the gains in over
+thresholds, the friction feed-forward, the inverse-dynamics feed-forward and the observer's settings, fading the gains in over
 `free_drive.transition_duration`; it works in hold, free drive and while disconnected, not
 during playback. Limits, jog steps and the home position still need a restart.
 `GET /api/gains` shows the values in use.
@@ -271,8 +276,36 @@ and free drive always compensate gravity. The start-up state is `feedforward.gra
 `friction` / `inertia` in the YAML; **Reload gains** re-reads the magnitudes
 (`friction.coulomb`, `inertia_scale`, `armature`) but leaves the switches where they are. The
 scope's torque strip draws the feed-forward the command contains, and a recording keeps the
-three terms apart, so a wobble driven by a feed-forward term can be told from one driven by
+terms apart, so a wobble driven by a feed-forward term can be told from one driven by
 the feedback.
+
+**Disturbance observer.** A fourth switch, **observer** (`feedforward.observer`, or
+`{"observer": true}` to `POST /api/feedforward`), feeds back what the first three leave over.
+While the motors are enabled, `src/robot_teaching/observer.py` estimates every tick the joint
+torque the model does not explain: friction, the error of the gravity and inertia model, and
+anything pushing on the arm. It needs no acceleration measurement, only the positions, the
+velocity estimate and the torque the motors applied (`observer.torque`: their own report, or
+the MIT law the host evaluated at the previous tick), and its model is the feed-forward's
+(the URDF with `free_drive.tau_scale` and `feedforward.armature`). The estimate is the
+**disturbance estimate** trace of the scope's torque strip and the `tau_d_Nm` column of a
+recording, whether the switch is on or not. With the switch on, its negative is added to the
+MIT torque, clipped to `observer.max_torque`:
+
+* in **hold** and **playback** it acts like a slow integral term on the torque: a stiction
+  or gravity-model offset is taken out within about `1 / (2π · observer.bandwidth)` seconds,
+  and the arm becomes stiffer against a steady push, up to the clip;
+* in **free drive** it fades out over the gain fade time and stays off, because there the
+  disturbance is your hand; the estimate keeps running, which is the signal a later
+  admittance mode will use.
+
+In the simulator (0.3 N·m of Coulomb friction per joint) it cuts the largest playback
+tracking error of the test program from 9.9 to 4.3 mrad at the shipped 2 Hz, and removes the
+4 mrad hold sag of an arm 10 % heavier than its model. On the real arm, watch the estimate
+with the switch off first: it should be smooth and of the size of the friction. If it is
+noisy, lower `observer.bandwidth`. **Do not switch the observer and the friction term on
+together yet:** the observer reports the whole friction and compensates it a second time
+(measured on J3: the error turns from lagging to leading). `docs/disturbance_observer.md` has
+the derivation, the tests and the first recordings on the arm.
 
 **Calibrate on your arm before trusting the defaults:** the gripper `open_position`
 (the vendor examples use 5.0 rad), the free-drive gains (start with one joint enabled,
@@ -303,8 +336,11 @@ uv run pytest
 
 The suite covers the program model, the planners (limits, continuity, straightness),
 the controller state machine on the simulator (hold, jog, free-drive lock/follow,
-playback tracking and gripper events, stop ramp, e-stop, error fallback) and the HTTP /
-WebSocket API. `tests/test_dsp.py` runs the scope's spectrum maths under Node
+playback tracking and gripper events, stop ramp, e-stop, error fallback), the disturbance
+observers against known pushes, friction and a hidden armature in the simulator, the observer
+feed-forward term in hold, playback and free drive, and the HTTP / WebSocket API. The tests
+load `config/teaching.yaml` alone: values in a `teaching.local.yaml` tuned for the real arm
+do not apply to the simulator. `tests/test_dsp.py` runs the scope's spectrum maths under Node
 (`node tests/dsp_check.js`) and `tests/test_record.py` the scope recording reader and the
 drawing module's axis helpers (`node tests/record_check.js`); both are skipped when `node` is
 not installed.
@@ -317,7 +353,7 @@ not installed.
   not implemented.
 * The vendor's position request every cycle plus the command frame is near the CAN
   bandwidth at 500 Hz with 7 motors; lower `control.rate` if the bus saturates.
-* No external-force estimate and no admittance control yet. `docs/disturbance_observer.md`
-  is the design note for a sensorless estimate (a disturbance observer on the joint
-  torques): what the published design gives on this arm, the concerns, and the suggested
-  form and order of work. Nothing in it is implemented.
+* The disturbance observer has been run on the arm on one joint only (J3). With the friction
+  feed-forward also on, friction is compensated twice; use one or the other for now. Its
+  estimate contains friction as well as any push: there is no external-force estimate yet,
+  and no admittance control. `docs/disturbance_observer.md` lists the order of work.

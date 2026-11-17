@@ -15,6 +15,11 @@ Modes
                evaluated on the commanded motion; a speed scale slews
                smoothly, and a stop ramps the speed to zero before returning to HOLD.
 
+A disturbance observer (:mod:`robot_teaching.observer`) runs in every mode while the motors
+are enabled and estimates the joint torque the model does not explain. With the observer
+feed-forward switched on, HOLD and PLAYBACK subtract that estimate from the torque they send;
+FREE_DRIVE never does, since there the disturbance is the operator's hand.
+
 The gripper is held stiffly at its target, except in *hand mode* (HOLD and
 FREE_DRIVE only): the setpoint then follows the measured position with light
 damping so the operator can open or close it by hand, and the recorded target
@@ -47,6 +52,7 @@ import numpy as np
 from .backend.base import ArmBackend
 from .config import TeachingConfig, resolve_vector
 from .model import Pose, RobotModel
+from .observer import MomentumObserver
 from .planning import Trajectory
 
 
@@ -61,14 +67,16 @@ class Mode(str, Enum):
 class TraceBuffer:
     """Ring buffer of one row per control tick for the scope: the controller clock, the
     commanded and measured joint positions, the torque the MIT law asks for (evaluated on the
-    host from the gains, the errors and the feed-forward), the torque the motors report, and
-    the three feed-forward terms the commanded torque contains (gravity, friction, inertia, as
-    applied: zero for a term that is switched off). A field not given to :meth:`append` is NaN.
+    host from the gains, the errors and the feed-forward), the torque the motors report, the
+    four feed-forward terms the commanded torque contains (gravity, friction, inertia and the
+    observer's compensation ``tau_o``, as applied: zero for a term that is switched off), and
+    the disturbance observer's estimate ``tau_d``, whether it is fed back or not. A field not
+    given to :meth:`append` is NaN.
 
     ``epoch`` (wall-clock time of creation) identifies the run: a client that sees a new value
     knows the server restarted and the clock ``t`` started again from zero."""
 
-    FIELDS = ("q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i")
+    FIELDS = ("q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i", "tau_o", "tau_d")
 
     def __init__(self, n: int, size: int) -> None:
         self.n = int(n)
@@ -124,6 +132,8 @@ class Snapshot:
     error: str | None
     tick_dt: float
     feedforward: dict[str, bool] = field(default_factory=dict)   # which terms playback feeds forward
+    tau_o: np.ndarray = field(default_factory=lambda: np.zeros(0))   # observer compensation as applied
+    tau_d: np.ndarray = field(default_factory=lambda: np.zeros(0))   # the observer's disturbance estimate
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +152,8 @@ class Snapshot:
             "tau_g": self.tau_g.tolist(),
             "tau_f": self.tau_f.tolist(),
             "tau_i": self.tau_i.tolist(),
+            "tau_o": self.tau_o.tolist(),
+            "tau_d": self.tau_d.tolist(),
             "ee_speed": list(self.ee_speed),
             "free_drive_status": self.free_drive_status,
             "gains_settled": self.gains_settled,
@@ -182,12 +194,14 @@ class TeachController:
         fd = cfg.free_drive
         self.rate = float(cfg.control.rate or backend.rate)
 
-        self._load_tuning(cfg)      # hold / free-drive / gripper gains, tau_scale, friction (see reload_gains)
+        self._observer: MomentumObserver | None = None
+        self._load_tuning(cfg)      # hold / free-drive / gripper gains, tau_scale, friction, observer (see reload_gains)
         # Which terms playback feeds forward: runtime state, set from the YAML at start-up and
         # switched with set_feedforward (reload_gains leaves it alone). Each term's weight ramps
         # between 0 and 1 over the gain fade time, so a switch never steps the torque.
         ff = cfg.feedforward
-        self._ff_on = {"gravity": bool(ff.gravity), "friction": bool(ff.friction), "inertia": bool(ff.inertia)}
+        self._ff_on = {"gravity": bool(ff.gravity), "friction": bool(ff.friction), "inertia": bool(ff.inertia),
+                       "observer": bool(ff.observer)}
         self._ff_weight = {k: (1.0 if v else 0.0) for k, v in self._ff_on.items()}
         self._margin = float(cfg.limits.joint_position_margin)
         self._jog_vel = float(cfg.jog.joint_velocity)
@@ -208,6 +222,9 @@ class TeachController:
         self._tau_g = np.zeros(n)
         self._tau_f = np.zeros(n)
         self._tau_i = np.zeros(n)
+        self._tau_o = np.zeros(n)                       # observer compensation as applied
+        self._tau_d = np.zeros(n)                       # the observer's estimate
+        self._tau_sent: np.ndarray | None = None        # MIT torque of the last tick, evaluated on the host
         self._trace = TraceBuffer(n, int(round(self.rate * self.TRACE_SECONDS)))
         self._integral = np.zeros(n)
         self._kp = self._hold_kp.copy()
@@ -399,8 +416,24 @@ class TeachController:
         armature = resolve_vector(ff.armature, n, "feedforward.armature")
         if ff_scale < 0.0 or np.any(armature < 0.0) or ff_clip <= 0.0:
             raise ValueError("feedforward.inertia_scale and armature must not be negative and max_torque must be positive")
+        ob = cfg.observer
+        obs_bandwidth = resolve_vector(ob.bandwidth, n, "observer.bandwidth")
+        obs_clip, obs_torque = float(ob.max_torque), str(ob.torque).strip().lower()
+        if np.any(~np.isfinite(obs_bandwidth)) or np.any(obs_bandwidth <= 0.0) or obs_clip < 0.0:
+            raise ValueError("observer.bandwidth must be positive and observer.max_torque not negative")
+        if obs_torque not in ("measured", "commanded"):
+            raise ValueError("observer.torque must be 'measured' or 'commanded'")
         gripper_kp = float(cfg.gripper.kp) if cfg.gripper.kp is not None else float(gkp)
         gripper_kd = float(cfg.gripper.kd) if cfg.gripper.kd is not None else float(gkd)
+        # Everything is validated: apply. The observer's model is the one the feed-forward uses
+        # (the scaled gravity and the armature); it raises on a value it cannot take, before
+        # anything else has changed.
+        if self._observer is None:
+            self._observer = MomentumObserver(self.model, obs_bandwidth, armature=armature, gravity_scale=tau_scale)
+        else:
+            self._observer.configure(armature=armature, gravity_scale=tau_scale)
+            self._observer.set_bandwidth(obs_bandwidth)
+        self._obs_bandwidth, self._obs_clip, self._obs_torque = obs_bandwidth, obs_clip, obs_torque
         self._tau_scale, self._free_kp, self._free_kd = tau_scale, free_kp, free_kd
         self._hold_kp, self._hold_kd = hold_kp, hold_kd
         self._coulomb = coulomb
@@ -413,8 +446,8 @@ class TeachController:
         """Re-read the tuning parameters from ``cfg`` and the backend and apply them, no restart needed.
 
         Covers the hold, free-drive and gripper gains, ``free_drive.tau_scale``, the friction
-        feed-forward and, since the new config replaces the old one, the free-drive
-        thresholds. In hold or free drive the mode's new gains fade in over
+        feed-forward, the observer's bandwidth, clip and torque input and, since the new config
+        replaces the old one, the free-drive thresholds. In hold or free drive the mode's new gains fade in over
         ``free_drive.transition_duration`` so stiffness never jumps; disconnected or disabled
         they are stored for the next hold. Refused during playback. Limits, jog steps and the
         home position keep their start-up values.
@@ -447,6 +480,8 @@ class TeachController:
                 "friction": {"coulomb": self._coulomb.tolist(), "velocity_scale": self._friction_v0},
                 "feedforward": {**self._ff_on, "inertia_scale": self._ff_scale, "armature": self._armature.tolist(),
                                 "max_torque": self._ff_clip},
+                "observer": {"bandwidth": self._obs_bandwidth.tolist(), "max_torque": self._obs_clip,
+                             "torque": self._obs_torque},
                 "gripper": {"kp": self._gripper_kp, "kd": self._gripper_kd, "hand_kd": self._gripper_hand_kd},
                 "current": {"kp": self._kp.tolist(), "kd": self._kd.tolist(), "settled": self._gain_t0 is None},
             }
@@ -458,24 +493,29 @@ class TeachController:
                 f"free drive kp {self._free_kp[0]:g} kd {self._free_kd[0]:g}; "
                 f"gravity tau_scale {vec(self._tau_scale)}; "
                 f"friction {vec(self._coulomb)} N·m; inertia feed-forward x{self._ff_scale:g} "
-                f"armature {vec(self._armature)}; gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}; "
+                f"armature {vec(self._armature)}; observer {vec(self._obs_bandwidth)} Hz, "
+                f"±{self._obs_clip:g} N·m, {self._obs_torque} torque; "
+                f"gripper kp {self._gripper_kp:g} kd {self._gripper_kd:g}; "
                 f"feed-forward {self._feedforward_summary()}")
 
     def feedforward(self) -> dict[str, bool]:
-        """Which feed-forward terms playback adds to the MIT torque (gravity, friction, inertia)."""
+        """Which feed-forward terms are switched on (gravity, friction, inertia, observer)."""
         with self._lock:
             return dict(self._ff_on)
 
     def set_feedforward(self, gravity: bool | None = None, friction: bool | None = None,
-                        inertia: bool | None = None) -> tuple[bool, str]:
-        """Switch the playback feed-forward terms on or off; ``None`` leaves a term as it is.
+                        inertia: bool | None = None, observer: bool | None = None) -> tuple[bool, str]:
+        """Switch the feed-forward terms on or off; ``None`` leaves a term as it is.
 
         Works in every mode, playback included: a term's weight ramps between 0 and 1 over
         ``free_drive.transition_duration``, so the torque never steps. Hold and free drive
-        always compensate gravity; the gravity switch only concerns playback.
+        always compensate gravity; the gravity, friction and inertia switches only concern
+        playback. The observer's compensation acts in hold and playback, and fades out in
+        free drive whatever its switch says.
         """
         with self._lock:
-            for name, value in (("gravity", gravity), ("friction", friction), ("inertia", inertia)):
+            for name, value in (("gravity", gravity), ("friction", friction), ("inertia", inertia),
+                                ("observer", observer)):
                 if value is not None:
                     self._ff_on[name] = bool(value)
             return True, "feed-forward " + self._feedforward_summary()
@@ -488,6 +528,8 @@ class TeachController:
         # progress, which play() and enter_hold() set to zero for an immediate switch.
         step = dt / max(float(self.cfg.free_drive.transition_duration), 1e-3)
         for name, on in self._ff_on.items():
+            if name == "observer":                      # never against the hand in free drive
+                on = on and self._mode in (Mode.HOLD, Mode.PLAYBACK)
             target, w = (1.0 if on else 0.0), self._ff_weight[name]
             self._ff_weight[name] = min(target, w + step) if target > w else max(target, w - step)
 
@@ -506,6 +548,29 @@ class TeachController:
             return np.zeros(self.n)
         tau = self._ff_scale * self.model.inertial_torque(q_cmd, qd_cmd, qdd_cmd, self._armature)
         return np.clip(tau, -self._ff_clip, self._ff_clip)
+
+    def _update_observer(self, dt: float) -> None:
+        """Advance the disturbance observer over the tick that just ended and set the
+        compensation for the one that starts: ``tau_o = −weight · clip(tau_d)``.
+
+        The observer needs the torque the motors applied since the last tick: their report, or
+        the MIT law the host evaluated then (per joint, also where a motor reports nothing).
+        Without one (the first tick after enabling, after an error) it starts again from zero.
+        """
+        if self._tau_sent is None:
+            self._observer.reset()
+            self._observer.update(self._q, self._qd, np.zeros(self.n), dt)     # initialise at this state
+        else:
+            tau = self._tau_sent
+            if self._obs_torque == "measured":
+                meas = self.backend.read_torques()
+                if meas is not None:
+                    meas = np.asarray(meas, float)[: self.n]
+                    tau = np.where(np.isfinite(meas), meas, tau)
+            self._observer.update(self._q, self._qd, tau, dt)
+        self._tau_d = self._observer.estimate
+        w = self._ff_weight["observer"]
+        self._tau_o = -w * np.clip(self._tau_d, -self._obs_clip, self._obs_clip) if w > 0.0 else np.zeros(self.n)
 
     def _friction_ff(self, qd_cmd: np.ndarray) -> np.ndarray:
         """Coulomb friction feed-forward: the friction each joint is about to meet, with the
@@ -768,28 +833,33 @@ class TeachController:
                 tau_g = self._tau_g                       # the gravity term applied (hold and free drive: always)
 
                 if self._mode == Mode.DISABLED:
+                    self._tau_sent = None                 # no torque applied: the observer restarts on enable
+                    self._tau_o = np.zeros(self.n)
+                    self._tau_d = np.zeros(self.n)
                     self._publish(dt)
                     return
+                self._update_observer(dt)
                 if self._mode == Mode.HOLD:
                     q_cmd, qd_cmd = self._update_hold(dt)
-                    tau = self._tau_g
+                    tau = self._tau_g + self._tau_o
                 elif self._mode == Mode.FREE_DRIVE:
                     q_cmd, qd_cmd = self._update_free_drive(dt, blend)
-                    tau = self._tau_g + self._integral
+                    tau = self._tau_g + self._integral + self._tau_o     # tau_o fades to zero here
                 else:
                     q_cmd, qd_cmd, qdd_cmd = self._update_playback(dt)
                     wg, wf, wi = (self._ff_weight[k] for k in ("gravity", "friction", "inertia"))
                     self._tau_f = wf * self._friction_ff(qd_cmd) if wf > 0.0 else np.zeros(self.n)
                     self._tau_i = wi * self._inertia_ff(q_cmd, qd_cmd, qdd_cmd) if wi > 0.0 else np.zeros(self.n)
                     tau_g = wg * self._tau_g
-                    tau = tau_g + self._tau_f + self._tau_i
+                    tau = tau_g + self._tau_f + self._tau_i + self._tau_o
                 self.backend.send_arm_mit(q_cmd, qd_cmd, self._kp, self._kd, tau)
                 tau_meas = self.backend.read_torques()
+                self._tau_sent = self._kp * (q_cmd - self._q) + self._kd * (qd_cmd - self._qd) + tau
                 self._trace.append(
                     self._clock, q_cmd=q_cmd, q=self._q,
-                    tau_cmd=self._kp * (q_cmd - self._q) + self._kd * (qd_cmd - self._qd) + tau,
+                    tau_cmd=self._tau_sent,
                     tau_meas=np.nan if tau_meas is None else np.asarray(tau_meas, float)[: self.n],
-                    tau_g=tau_g, tau_f=self._tau_f, tau_i=self._tau_i,
+                    tau_g=tau_g, tau_f=self._tau_f, tau_i=self._tau_i, tau_o=self._tau_o, tau_d=self._tau_d,
                 )
                 if self.backend.has_gripper and self._gripper_target is not None:
                     if self._gripper_hand and self._gripper is not None and self._mode in (Mode.HOLD, Mode.FREE_DRIVE):
@@ -801,6 +871,7 @@ class TeachController:
             except Exception as e:
                 # Fail safe: stiff hold where the arm is, report, keep running.
                 self._error = f"{type(e).__name__}: {e}"
+                self._tau_sent = None                     # what was applied is unknown: restart the observer
                 try:
                     if self._enabled:
                         self._enter_hold(self._q, 0.0)
@@ -855,6 +926,8 @@ class TeachController:
             error=self._error,
             tick_dt=float(dt),
             feedforward=dict(self._ff_on),
+            tau_o=self._tau_o.copy(),
+            tau_d=self._tau_d.copy(),
         )
         with self._snap_lock:
             self._snapshot = snap

@@ -71,11 +71,12 @@
       <label><input type="checkbox" id="pb-loop"> Loop</label>
       <label>Start from <select id="pb-start"></select></label>
     </div>
-    <h3 title="the torques playback adds to the MIT law's kp·error + kd·velocity-error term; a change ramps in over the gain fade time, during playback too. Hold and free drive always compensate gravity. The start-up state is feedforward.gravity / friction / inertia in teaching.yaml.">Feed-forward <span class="muted">(playback)</span></h3>
+    <h3 title="the torques added to the MIT law's kp·error + kd·velocity-error term; a change ramps in over the gain fade time, during playback too. Gravity, friction and inertia concern playback (hold and free drive always compensate gravity); the observer acts in hold and playback, never in free drive. The start-up state is feedforward.gravity / friction / inertia / observer in teaching.yaml.">Feed-forward <span class="muted">(playback; observer: hold too)</span></h3>
     <div class="row ff-row">
       <label title="g(q) of the URDF: the textbook PD + gravity-compensation controller"><input type="checkbox" id="ff-gravity"> gravity</label>
       <label title="Coulomb friction (friction.coulomb) with the sign of the commanded velocity"><input type="checkbox" id="ff-friction"> friction</label>
       <label title="inverse dynamics on the commanded motion: inertia_scale × (M(q)·q̈ + C(q,q̇)·q̇ + armature·q̈), clipped to max_torque"><input type="checkbox" id="ff-inertia"> inertia</label>
+      <label title="disturbance observer: subtracts the estimated joint torque the model does not explain (friction, model error, anything pushing on the arm), clipped to observer.max_torque. It makes hold and playback stiffer against a push; it fades out in free drive. Watch the 'disturbance estimate' trace in the scope before switching it on."><input type="checkbox" id="ff-observer"> observer</label>
     </div>
     <div class="row">
       <button class="btn" id="btn-plan">Plan (preview)</button>
@@ -188,7 +189,7 @@
           <button id="scope-zoom-in" title="zoom in: a shorter window">+</button>
         </span>
         <button class="btn" id="scope-pause" title="freeze the traces: the time axis then shows the controller clock and dragging a trace looks back in time; Resume returns to live. The readout and the recording stay live.">⏸ Pause</button>
-        <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, tau_g_Nm, tau_f_Nm, tau_i_Nm, run)">● Record</button>
+        <button class="btn" id="scope-record" title="record every sample of the selected joint; Stop downloads them as a CSV file (t_s, joint, q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, tau_g_Nm, tau_f_Nm, tau_i_Nm, tau_o_Nm, tau_d_Nm, run)">● Record</button>
         <button class="btn" id="scope-fft-toggle" title="show the amplitude spectrum of one signal over the samples on screen: Welch's method, Hann-windowed and detrended 2 s segments averaged, segments with missing samples left out; Ctrl+wheel over it zooms the frequency range">Spectrum</button>
         <span class="kv" id="scope-readout"></span>
         <a class="btn" href="/plot" target="_blank" rel="noopener" title="open a recorded CSV file in the offline plotter (a page that also works from disk, without the server)">Plot…</a>
@@ -213,7 +214,7 @@
       </div>
       <div class="strip">
         <div class="strip-title">Torque <span class="muted">N·m</span>
-          <span class="lg" title="untick a trace to hide it for the moment; the scale then fits the traces left"><label class="li"><input type="checkbox" checked data-trace="tau_cmd"><i class="sw cmd"></i>commanded (MIT law on the host)</label> <label class="li"><input type="checkbox" checked data-trace="tau_meas"><i class="sw meas"></i>reported by the motor</label> <label class="li"><input type="checkbox" checked data-trace="tau_ff"><i class="sw ff"></i>feed-forward (the terms switched on)</label></span></div>
+          <span class="lg" title="untick a trace to hide it for the moment; the scale then fits the traces left"><label class="li"><input type="checkbox" checked data-trace="tau_cmd"><i class="sw cmd"></i>commanded (MIT law on the host)</label> <label class="li"><input type="checkbox" checked data-trace="tau_meas"><i class="sw meas"></i>reported by the motor</label> <label class="li"><input type="checkbox" checked data-trace="tau_ff"><i class="sw ff"></i>feed-forward (the terms switched on)</label> <label class="li"><input type="checkbox" checked data-trace="tau_d"><i class="sw obs"></i>disturbance estimate (observer)</label></span></div>
         <canvas id="scope-tau"></canvas>
         <div class="resize" id="scope-tau-resize" title="drag to set the strip's height (kept across reloads); a double-click restores it"></div>
       </div>
@@ -227,6 +228,7 @@
             <option value="tau_cmd">commanded torque</option>
             <option value="tau_meas">reported torque</option>
             <option value="tau_ff">feed-forward torque</option>
+            <option value="tau_d">disturbance estimate</option>
           </select></label>
           <span class="seg scope-zoom" aria-label="frequency range">
             <button id="fft-zoom-out" title="wider frequency range (Ctrl+wheel over the spectrum also zooms)">−</button>
@@ -238,7 +240,7 @@
         <div class="resize" id="scope-fft-resize" title="drag to set the strip's height (kept across reloads); a double-click restores it"></div>
       </div>
     </div>
-    <p class="hint">Pick a joint to watch it follow its setpoint. The error strip shows the position error or, with its selector, the torque error (reported by the motor − commanded). A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the feed-forward trace is the gravity, friction and inertia terms switched on in the Playback card, and the recording keeps the three apart; the reported torque comes from the motor's feedback frame. Untick a trace in a legend to hide it for the moment; the scale then fits the traces left, and a reload shows all of them again. Drag the bar under a strip to set its height (a double-click restores it). <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
+    <p class="hint">Pick a joint to watch it follow its setpoint. The error strip shows the position error or, with its selector, the torque error (reported by the motor − commanded). A sawtooth in the error at low speed is stick-slip; gaps shared by every joint point at the bus; a 3–4 Hz ring on one joint is low damping. The commanded torque is kp·(error) + kd·(velocity error) + feed-forward; the feed-forward trace is the gravity, friction, inertia and observer terms switched on in the Playback card, and the recording keeps the four apart; the reported torque comes from the motor's feedback frame. The disturbance estimate is the joint torque the model does not explain (friction and model error, with a minus sign where they resist; a push on the arm), as the observer sees it whether its switch is on or not: with the switch on, its negative is part of the feed-forward. Untick a trace in a legend to hide it for the moment; the scale then fits the traces left, and a reload shows all of them again. Drag the bar under a strip to set its height (a double-click restores it). <b>−</b>/<b>+</b> zoom the window between 0.5 s and 60 s. <b>Pause</b> freezes the traces (drag one to look back in time; the axis then shows the controller clock, the <code>t_s</code> of a recording). <b>Record</b> writes every sample of the joint to a CSV file that downloads on <b>Stop</b>. <b>Spectrum</b> adds the amplitude spectrum of one signal over the samples on screen, highest peak above 1 Hz marked: a wobble is a peak in the error; the same peak in the commanded torque means the loop is driving it, a peak only in the measured position or the reported torque points at the mechanics. <b>max |error|</b> is the largest tracking error over every sample received since the joint was picked or <b>Reset max</b> was pressed, not only over the samples on screen; a hole in a trace means samples were missing.</p>
   </section>
 </main>
 <script src="/static/dsp.js"></script>

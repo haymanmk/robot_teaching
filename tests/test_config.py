@@ -33,5 +33,5 @@ def test_hardware_yaml_resolves_relative_to_the_config_file(tmp_path):
 
 
 def test_feedforward_switches_default_to_gravity_only():
-    ff = load_config().feedforward
-    assert (ff.gravity, ff.friction, ff.inertia) == (True, False, False)
+    ff = load_config(use_local=False).feedforward
+    assert (ff.gravity, ff.friction, ff.inertia, ff.observer) == (True, False, False, False)

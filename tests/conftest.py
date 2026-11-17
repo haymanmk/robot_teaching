@@ -15,7 +15,9 @@ def model():
 
 @pytest.fixture(scope="session")
 def cfg():
-    return load_config()
+    # The shipped configuration alone: a machine's teaching.local.yaml holds gains tuned for the
+    # real arm (a gravity tau_scale, say), which the simulator does not share.
+    return load_config(use_local=False)
 
 
 @pytest.fixture

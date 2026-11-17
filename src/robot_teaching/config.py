@@ -98,21 +98,41 @@ class FrictionConfig:
 class FeedforwardConfig:
     """Which torques playback feeds forward on top of the MIT law, and the inverse-dynamics term.
 
-    ``gravity``, ``friction`` and ``inertia`` are the start-up state of the three terms (the
-    pendant and ``POST /api/feedforward`` switch them live, ramped in over the gain fade time):
-    the URDF gravity torque, the Coulomb term of the ``friction`` section, and the
+    ``gravity``, ``friction``, ``inertia`` and ``observer`` are the start-up state of the four
+    terms (the pendant and ``POST /api/feedforward`` switch them live, ramped in over the gain
+    fade time): the URDF gravity torque, the Coulomb term of the ``friction`` section, the
     inverse-dynamics term ``inertia_scale × (M(q) q̈ + C(q, q̇) q̇ + armature · q̈)`` evaluated
-    on the commanded trajectory and clipped to ``±max_torque`` per joint. Gravity alone is
-    normally enough; hold and free drive always compensate it. ``armature`` is the rotor
-    inertia reflected through the gear (rotor inertia × ratio², kg·m², per joint), which the
-    URDF lacks; identify it on the arm.
+    on the commanded trajectory and clipped to ``±max_torque`` per joint, and the disturbance
+    observer's compensation (the ``observer`` section). Gravity alone is normally enough; hold
+    and free drive always compensate it. ``armature`` is the rotor inertia reflected through
+    the gear (rotor inertia × ratio², kg·m², per joint), which the URDF lacks; identify it on
+    the arm. The observer's model uses it too.
     """
     gravity: bool = True
     friction: bool = False
     inertia: bool = False
+    observer: bool = False
     inertia_scale: float = 1.0
     armature: Any = 0.0          # kg·m², scalar or one value per joint
     max_torque: float = 3.0      # N·m, clip of the term per joint
+
+
+@dataclass
+class ObserverConfig:
+    """Disturbance observer (:mod:`robot_teaching.observer`): the joint torque the model does
+    not explain, estimated every tick from the positions, the velocity estimate and the torque
+    the motors applied. The estimate is always computed and shown in the scope; with the
+    ``feedforward.observer`` switch on, its negative is added to the MIT torque in hold and
+    playback (never in free drive, where it would fight the hand), clipped to ``±max_torque``.
+
+    ``bandwidth`` is the corner frequency of the estimate in Hz (scalar or per joint): higher
+    rejects faster and passes more velocity noise. ``torque`` chooses what the observer takes
+    as the applied torque: ``measured``, the motors' report (the commanded value where a motor
+    reports none), or ``commanded``, the MIT law evaluated on the host at the previous tick.
+    """
+    bandwidth: Any = 2.0          # Hz, scalar or one value per joint
+    max_torque: float = 2.0       # N·m, clip of the compensation per joint
+    torque: str = "measured"      # measured | commanded
 
 
 @dataclass
@@ -170,6 +190,7 @@ class TeachingConfig:
     hold: HoldConfig = field(default_factory=HoldConfig)
     friction: FrictionConfig = field(default_factory=FrictionConfig)
     feedforward: FeedforwardConfig = field(default_factory=FeedforwardConfig)
+    observer: ObserverConfig = field(default_factory=ObserverConfig)
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
     can: CanConfig = field(default_factory=CanConfig)
@@ -209,6 +230,7 @@ _SECTIONS = {
     "hold": HoldConfig,
     "friction": FrictionConfig,
     "feedforward": FeedforwardConfig,
+    "observer": ObserverConfig,
     "jog": JogConfig,
     "gripper": GripperConfig,
     "can": CanConfig,

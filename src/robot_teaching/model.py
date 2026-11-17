@@ -143,6 +143,12 @@ class RobotModel:
         """Diagonal of the joint-space inertia matrix."""
         return np.diag(self.mass_matrix(q)).copy()
 
+    def coriolis_matrix(self, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
+        """Coriolis matrix C(q, q̇) of the arm joints, n × n, with ``Ṁ = C + Cᵀ`` (used by the
+        disturbance observers)."""
+        C = pin.computeCoriolisMatrix(self.model, self.data, self.pad(q), self.pad(np.asarray(qd, dtype=float)))
+        return np.array(C[: self.n, : self.n])
+
     def nonlinear_effects(self, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
         """``C(q, q̇) q̇ + g(q)`` for the arm joints, N·m (used by the simulator)."""
         pin.nonLinearEffects(self.model, self.data, self.pad(q), self.pad(np.asarray(qd, dtype=float)))

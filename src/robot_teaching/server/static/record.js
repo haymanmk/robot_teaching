@@ -1,6 +1,7 @@
 /* Reading a scope recording: the CSV the pendant's Record button writes (columns t_s, joint,
-   q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, tau_g_Nm, tau_f_Nm, tau_i_Nm, run; one
-   joint per file; older files lack the three feed-forward columns). Plain functions
+   q_cmd_rad, q_rad, err_rad, tau_cmd_Nm, tau_meas_Nm, tau_g_Nm, tau_f_Nm, tau_i_Nm, tau_o_Nm,
+   tau_d_Nm, run; one joint per file; older files lack the feed-forward columns, or only the two
+   of the disturbance observer). Plain functions
    without DOM access, so Node can run tests/record_check.js on them; in the browser they live on
    window.scopeRecord. */
 (function (root, factory) {
@@ -9,10 +10,10 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
   const GAP = 0.25;                                               // s without samples: a hole (as in the scope)
-  const FIELDS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i"];
+  const FIELDS = ["t", "q_cmd", "q", "tau_cmd", "tau_meas", "tau_g", "tau_f", "tau_i", "tau_o", "tau_d"];
   const REQUIRED = ["t", "q_cmd", "q"];
   const FF = ["tau_g", "tau_f", "tau_i"];
-  const COLUMNS = { t: "t_s", q_cmd: "q_cmd_rad", q: "q_rad", tau_cmd: "tau_cmd_Nm", tau_meas: "tau_meas_Nm", tau_g: "tau_g_Nm", tau_f: "tau_f_Nm", tau_i: "tau_i_Nm" };
+  const COLUMNS = { t: "t_s", q_cmd: "q_cmd_rad", q: "q_rad", tau_cmd: "tau_cmd_Nm", tau_meas: "tau_meas_Nm", tau_g: "tau_g_Nm", tau_f: "tau_f_Nm", tau_i: "tau_i_Nm", tau_o: "tau_o_Nm", tau_d: "tau_d_Nm" };
   const DEG = 180 / Math.PI;
 
   /**
@@ -22,10 +23,13 @@
    * rows are split into runs: a new run starts where the `run` column changes or where `t_s`
    * steps backwards (a server restart; its clock starts again from zero). Returns { joint, rows,
    * runs, problems }; each run is { run, t, q_cmd, q, tau_cmd, tau_meas, tau_g, tau_f, tau_i,
-   * q_cmd_deg, q_deg, err_deg, tau_err, tau_ff } with Float64Array columns: the positions again
-   * in degrees for the display, the tracking error (measured − commanded) in degrees, the torque
-   * tracking error (reported − commanded) in N·m and the feed-forward torque (the sum of the
-   * gravity, friction and inertia terms) in N·m.
+   * tau_o, tau_d, q_cmd_deg, q_deg, err_deg, tau_err, tau_ff } with Float64Array columns: the
+   * positions again in degrees for the display, the tracking error (measured − commanded) in
+   * degrees, the torque tracking error (reported − commanded) in N·m and the feed-forward torque
+   * (the sum of the gravity, friction, inertia and observer terms) in N·m. `tau_o` is the
+   * observer's compensation as applied and `tau_d` its disturbance estimate; a file recorded
+   * before the observer existed has neither (NaN), and its feed-forward is the sum of the other
+   * three.
    */
   function parse(text) {
     const problems = [];
@@ -100,7 +104,7 @@
           r.q_deg[k] = r.q[k] * DEG;
           r.err_deg[k] = (r.q[k] - r.q_cmd[k]) * DEG;                       // NaN when either is missing
           r.tau_err[k] = r.tau_meas[k] - r.tau_cmd[k];
-          r.tau_ff[k] = r.tau_g[k] + r.tau_f[k] + r.tau_i[k];
+          r.tau_ff[k] = r.tau_g[k] + r.tau_f[k] + r.tau_i[k] + (col.tau_o < 0 ? 0 : r.tau_o[k]);
         }
         runs.push(r);
         start = i;

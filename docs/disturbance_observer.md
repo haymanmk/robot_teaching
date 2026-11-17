@@ -1,11 +1,15 @@
 # Disturbance observer for sensorless force estimation: design note
 
-**Status (2026-11-06).** A design note: nothing here is implemented. It records what the
-nonlinear disturbance observer (NDOB) of Mohammadi et al. gives on this arm, the concerns
-that came out of checking it against the arm's model and control loop, and the form and
-order of work suggested instead. The numbers were computed from the URDF with the snippets
-below (`uv run python` from the repository root); the two observer forms were checked
-against a known disturbance on a simulated plant, not on the arm.
+**Status (2026-11-17).** The observer exists as a module, `src/robot_teaching/observer.py`,
+and the controller runs it every tick: its estimate is a scope trace, and a fourth
+feed-forward switch feeds it back in hold and playback (section 4). Both are tested against
+the simulator. A first pair of recordings on the arm (J3, section 4) confirms the estimate
+and the torque input, and shows that the observer and the friction feed-forward must not be
+switched on together as things stand. The rest is a design note. It records what the nonlinear
+disturbance observer (NDOB) of Mohammadi et al. gives on this arm, the concerns that came
+out of checking it against the arm's model and control loop, and the form and order of work
+suggested instead. The numbers were computed from the URDF with the snippets below
+(`uv run python` from the repository root).
 
 **Why.** The goal is admittance control without a load cell at the end-effector, which the
 payload budget rules out. A disturbance observer estimates the torque the model does not
@@ -142,13 +146,17 @@ over one tick is exact, and it uses the measured tick time, so loop jitter canno
 destabilise it:
 
 ```python
-# once per tick, before the new torque is sent; u_prev holds last tick's value
-a = np.exp(-K * dt)                         # K: per-joint bandwidth, rad/s; dt: measured
-z = a * z + (1 - a) * u_prev                # z over the interval the last torque was applied
-p = K * (M_hat @ qd)                        # M_hat = model.mass_matrix(q) + diag(armature)
-tau_d_hat = z + p
-u_prev = g - C.T @ qd - tau_applied - p     # C from pin.computeCoriolisMatrix
+# once per tick; tau_applied is the torque the motors applied since the previous tick
+k_p = K * (M_hat @ qd)                      # K: per-joint bandwidth, rad/s; M_hat = M(q) + diag(armature)
+w = g - C.T @ qd - k_p                      # C = model.coriolis_matrix(q, qd)
+a = np.exp(-K * dt)                         # dt: the measured tick time
+z = a * z + (1 - a) * (0.5 * (w_prev + w) - tau_applied)
+tau_d_hat = z + k_p
+w_prev = w
 ```
+
+The pose-dependent terms are taken as the mean of the two ends of the interval, which
+removes the half-tick lag a value held from the previous tick would add.
 
 **Check on a simulated plant.** URDF dynamics plus 0.01 kg·m² armature per joint, PD with
 gravity compensation following a 0.7 Hz sine (5.8 rad/s² peak on J1), a step disturbance of
@@ -162,6 +170,126 @@ and $y$ = 7 for the paper's form:
 
 With the armature left out of $\hat M$, both report a phantom 0.06 N·m, which is
 $J_a\,\ddot q$ = 0.01 × 5.8.
+
+### The module
+
+`src/robot_teaching/observer.py` has both forms behind one interface:
+
+```python
+from robot_teaching.model import RobotModel
+from robot_teaching.observer import MomentumObserver, ConstantGainObserver, inertia_bounds, paper_gain
+
+model = RobotModel(6)                                   # the calling thread's own model
+obs = MomentumObserver(model, bandwidth_hz=5.0, armature=None)   # scalar or one value per joint
+# every control tick, with the torque applied since the previous tick and the measured dt:
+#   tau_d_hat = obs.update(q, qd, tau_applied, dt)
+
+bounds = inertia_bounds(model, [1.0, 1.0, 1.0, 1.5, 1.5, 2.0])  # sigma1, sigma2, zeta of section 3
+paper = ConstantGainObserver(model, paper_gain(bounds, beta=6.0))
+print(paper.poles([0.0, 0.7, 1.1, 0.0, 0.0, 0.0]).real)          # 12 to 16 800 rad/s at the L pose
+```
+
+- `update` returns zeros on the first call (the estimate starts from zero wherever the arm
+  is and however it moves), and holds the estimate over a gap longer than `max_dt` instead
+  of integrating over it. `set_bandwidth` changes the corner without a step in the estimate.
+- The torque argument is the torque applied *since the previous call*: the motors' report
+  read this tick, or the command sent at the previous tick.
+- `ConstantGainObserver` uses a backward-Euler update, so its fast poles stay stable.
+
+`tests/test_observer.py` runs them on `SimBackend`, 500 Hz, about the L pose, with the
+simulator's hold gains and gravity fed forward:
+
+| case | result (momentum form, 5 Hz) |
+|---|---|
+| exact model, 0.3 rad swing at 0.7 Hz | estimate within 0.02 N·m of zero |
+| same, torque input = the previous tick's command | within 0.05 N·m: the host does not see the PD term the motor adds inside the tick |
+| `push()` of 0.05 to 1 N·m per joint | settles on the push within 0.01 N·m; 63 % rise 32 ms on all six joints |
+| per-joint bandwidths of 2 to 20 Hz | each joint rises with its own $1/K$ |
+| simulator friction 0.3 N·m Coulomb + 0.2 N·m·s/rad | estimate = −friction through the 5 Hz low-pass, within 0.04 N·m |
+| 0.05 kg·m² armature hidden from the model | phantom 0.29 N·m = $J_a\,\ddot q$; gone when the armature is given |
+| tick time jittered between 0.6 and 1.8 periods | push still found within 0.06 N·m |
+| paper's form, $y$ = 7.0 | settles on the push; 63 % rise 84 ms on J2, one tick on J6 |
+
+The simulator gives the observer exact positions and velocities, so these confirm the
+equations and the discretisation. They say nothing yet about the arm's filtered velocity
+and its torque signal (section 5).
+
+### In the controller
+
+`TeachController` owns a `MomentumObserver` and advances it at the start of every tick while
+the motors are enabled, with the controller's own filtered velocity estimate.
+
+- **Its model is the feed-forward's**: `free_drive.tau_scale × g(q)` and
+  `feedforward.armature`. With the URDF's unscaled gravity the observer would report the
+  difference between the two gravity models as a disturbance, and feeding that back would
+  cancel the calibration.
+- **The torque it is given** is the one applied since the previous tick (`observer.torque`):
+  `measured`, the motors' report, falling back per joint to the command where a motor
+  reports none; or `commanded`, the MIT law the host evaluated at the previous tick.
+- **The estimate** $\hat\tau_d$ is the trace field `tau_d`: the scope's "disturbance
+  estimate" and the `tau_d_Nm` column of a recording, whatever the switch says.
+- **The compensation** is the trace field `tau_o` $= -w\,\mathrm{clip}(\hat\tau_d,
+  \pm$`observer.max_torque`$)$, added to the feed-forward. The weight $w$ ramps to 1 over
+  `free_drive.transition_duration` while `feedforward.observer` is on and the mode is hold
+  or playback, and to 0 otherwise, so it fades out in free drive and never steps.
+- **It restarts from zero** after the motors were off (e-stop) and after a control-loop
+  error, when the applied torque is not known.
+
+Because the compensation is part of the torque the observer is told about, the estimate
+does not depend on whether it is fed back: in the ideal case there is no loop through the
+observer, only the low-pass on the true disturbance. What can close a loop is an error in
+the two signals it trusts, the velocity and the torque (section 5).
+
+`tests/test_controller.py`, on the simulator with the shipped configuration (0.3 N·m of
+Coulomb friction and 0.2 N·m·s/rad viscous per joint; the controller's velocity is the
+30 ms filtered finite difference, as on the arm):
+
+| case | observer off | observer on |
+|---|---|---|
+| playback of the test program, largest tracking error, `measured`, 2 Hz | 9.9 mrad | 4.3 mrad |
+| same, `commanded`, 2 Hz | 9.9 mrad | 3.8 mrad |
+| same, `measured`, 5 Hz | 9.9 mrad | 4.2 mrad |
+| hold, arm 10 % heavier than the model: sag | 4.3 mrad | below 0.1 mrad |
+| hold under a push of 0.05 to 1 N·m: deflection | up to 10 mrad | at most 0.1 mrad |
+| free drive with the switch on | | `tau_o` is exactly zero after the fade; a push is estimated, not opposed |
+
+With `commanded`, the peak estimate on J2 during playback is 0.86 N·m against 0.39 N·m with
+`measured`. The excess is the damping term the host mis-evaluates: it computes
+$k_d(\dot q_{cmd} - \dot q)$ with its lagging velocity estimate, while the motor uses its
+own. That is the error section 5 warns of, and the reason `measured` is the default; which
+of the two is better on the real arm depends on how fresh the motors' torque report is, and
+is still to be checked there. One observer update costs about 20 μs on the development
+machine, a whole controller tick about 50 μs of the 2 ms period.
+
+**First use on the arm.** Leave the switch off and record a move with the scope: the
+estimate should be smooth, about the size of the friction, with the sign opposing the
+motion. Compare a recording per `observer.torque` setting. Only then switch it on, in hold
+first, starting from a low `observer.max_torque`.
+
+### First recordings on the arm (2026-11-17)
+
+J3 swinging over the short stroke (0.737 to 1.107 rad) at 50 % speed, gravity and friction
+feed-forward on (0.37 N·m), observer at 2 Hz with `measured` torque, one recording with the
+observer switch off and one with it on (`data/dob_test/`, not under version control).
+
+- **The estimate is consistent.** It is the same in both recordings, as section 4 predicts:
+  −0.19 N·m moving up and +0.57 N·m moving down, that is 0.38 N·m of friction against the
+  motion and a gravity feed-forward about 0.19 N·m too high. The configured friction is 0.37.
+  Above 5 Hz it carries 0.07 N·m RMS of noise.
+- **`measured` is the right torque input.** The reported torque minus the host's commanded
+  torque is, to about 90 %, $-20\,(\dot q - \dot q_{filt})$: the joint's $k_d$ is 20, so the
+  difference is the damping term the host evaluates with its lagging velocity. The motors'
+  report is the truthful one, and it leads the host's figure by 15 to 23 ms.
+- **Friction is compensated twice when both switches are on.** The observer's model has no
+  friction, and the friction feed-forward is part of the torque it is told about, so it
+  reports the whole friction and its compensation stacks on the feed-forward. The mean error
+  went from +0.03 / +1.34 mrad (moving up / down) to +0.96 / −2.07 mrad: from lagging to
+  leading, with the RMS barely changed (2.24 to 1.94 mrad). Until the observer is given the
+  friction feed-forward as part of its model, use one or the other.
+- **What the observer can reach.** With it off the error is 1.8 mrad RMS below 1 Hz
+  (friction and the gravity offset, which it can remove), 1.0 mrad RMS between 1 and 15 Hz
+  (mostly the position-locked ripple near 5.6 Hz at this speed, above its bandwidth) and
+  0.14 mrad above.
 
 ## 5. Concerns specific to this arm
 
@@ -239,11 +367,13 @@ page of the pendant next to `plot.html`, not as a separate application:
 ## 9. Suggested order of work
 
 1. Observer module (suggested form, with the paper's form beside it for comparison) and
-   tests against `SimBackend.push()`.
+   tests against `SimBackend.push()`. *Done 2026-11-16, section 4.*
 2. Offline replay on existing recordings: noise floor, and the choice of torque input.
 3. Armature and friction identification (section 6); a better velocity estimate if the
    replay shows the 30 ms filter is the limit.
-4. A live $\hat\tau_d$ trace in the scope.
+4. A live $\hat\tau_d$ trace in the scope, and the estimate fed back as a feed-forward term
+   in hold and playback. *Done 2026-11-17, section 4. Not yet run on the arm; steps 2 and 3
+   are what make the estimate trustworthy there.*
 5. The tuning page (section 8).
 6. Joint-space admittance, then Cartesian.
 

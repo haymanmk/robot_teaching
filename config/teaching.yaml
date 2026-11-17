@@ -72,10 +72,12 @@ feedforward:
   # term below are there to try. These are the start-up states: the pendant's Feed-forward
   # checkboxes (POST /api/feedforward) switch them live, a change ramping in over
   # free_drive.transition_duration, during playback too. Hold and free drive always
-  # compensate gravity.
+  # compensate gravity. `observer` adds the disturbance observer's compensation (the
+  # observer section below), in hold as well as in playback.
   gravity: true
   friction: false
   inertia: false
+  observer: false
   # Inverse-dynamics feed-forward during playback, on top of gravity and friction:
   #   inertia_scale * (M(q)·qdd + C(q,qd)·qd + armature·qdd)
   # evaluated on the commanded trajectory and clipped to ±max_torque per joint. With the
@@ -88,6 +90,25 @@ feedforward:
   inertia_scale: 1.0
   armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   max_torque: 3.0        # N·m
+
+observer:
+  # Disturbance observer: every tick it estimates the joint torque the model does not
+  # explain (friction, model error, anything pushing on the arm) from the positions, the
+  # velocity estimate and the torque the motors applied. Its model is the feed-forward's:
+  # the URDF with free_drive.tau_scale on gravity and feedforward.armature on the inertia.
+  # The estimate is always computed and shown in the scope ("disturbance estimate"). With
+  # feedforward.observer on, its negative is added to the MIT torque in hold and playback,
+  # clipped to ±max_torque per joint; in free drive it fades out, since there the
+  # disturbance is your hand. Look at the estimate in the scope before switching it on:
+  # it should be smooth and of the size of the friction. docs/disturbance_observer.md has
+  # the background. Reloadable with the gains.
+  bandwidth: 2.0         # Hz, corner of the estimate, scalar or one value per joint. Higher
+                         # rejects faster and passes more velocity noise; the velocity
+                         # filter (free_drive.velocity_filter_time_constant, ~5 Hz) is the ceiling.
+  max_torque: 2.0        # N·m, the most the compensation may add per joint
+  torque: measured       # what the observer takes as the applied torque: `measured`, the
+                         # motors' report (the command where a motor reports none), or
+                         # `commanded`, the MIT law evaluated on the host at the last tick
 
 jog:
   joint_steps_deg: [0.5, 1.0, 5.0]
