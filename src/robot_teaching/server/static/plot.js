@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const ZOOMS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 60, 120, 300, 600, 1800, 3600];   // s, the zoom steps (Fit goes beyond)
   const FFT_FMAX = [5, 10, 25, 50, 100, 250];                     // Hz, the spectrum's frequency-range steps (clipped to fs/2)
-  const FFT_UNITS = { err: "°", tau_err: "N·m", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m", tau_g: "N·m", tau_f: "N·m", tau_i: "N·m", tau_o: "N·m", tau_d: "N·m" };
+  const FFT_UNITS = { err: "°", tau_err: "N·m", q: "°", q_cmd: "°", tau_cmd: "N·m", tau_meas: "N·m", tau_ff: "N·m", tau_g: "N·m", tau_f: "N·m", tau_i: "N·m", tau_o: "N·m", tau_d: "N·m", tau_r: "N·m" };
   const FFT_SEGMENT = 2.0;                                        // s per Welch segment, as in the live scope
   const GAP = scopeDraw.GAP;
   const DASH = [4, 3], B_ALPHA = 0.7;                            // the comparison recording: dashed, a little lighter, the same hues
@@ -390,7 +390,7 @@
       const tm = r.tau_meas[i];
       return `${tag}t ${r.t[i].toFixed(4)} s   commanded ${fmt(r.q_cmd_deg[i], 3)}°   measured ${fmt(r.q_deg[i], 3)}°   error ${fmt(r.err_deg[i], 3)}°   torque ${fmt(r.tau_cmd[i], 3)} N·m`
         + (Number.isFinite(tm) ? ` (motor ${fmt(tm, 3)}, error ${fmt(r.tau_err[i], 3)})` : "")
-        + (Number.isFinite(r.tau_ff[i]) ? `   feed-forward ${fmt(r.tau_ff[i], 3)} (g ${fmt(r.tau_g[i], 3)}, f ${fmt(r.tau_f[i], 3)}, i ${fmt(r.tau_i[i], 3)}${Number.isFinite(r.tau_o[i]) ? `, o ${fmt(r.tau_o[i], 3)}` : ""})` : "")
+        + (Number.isFinite(r.tau_ff[i]) ? `   feed-forward ${fmt(r.tau_ff[i], 3)} (g ${fmt(r.tau_g[i], 3)}, f ${fmt(r.tau_f[i], 3)}, i ${fmt(r.tau_i[i], 3)}${Number.isFinite(r.tau_o[i]) ? `, o ${fmt(r.tau_o[i], 3)}` : ""}${Number.isFinite(r.tau_r[i]) ? `, r ${fmt(r.tau_r[i], 3)}` : ""})` : "")
         + (Number.isFinite(r.tau_d[i]) ? `   disturbance ${fmt(r.tau_d[i], 3)}` : "");
     };
     const statsLine = (r, a, b, tag) => {

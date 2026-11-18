@@ -6,7 +6,10 @@ gear), Coriolis/centrifugal and gravity torques, viscous + Coulomb friction per
 joint, and an MIT impedance motor
 ``tau = kp (q_cmd - q) + kd (qd_cmd - qd) + tau_ff`` clipped to the URDF effort
 limit. ``gravity_scale`` ≠ 1 emulates a model error; ``push()`` applies an
-external joint torque to emulate the operator's hand in free-drive.
+external joint torque to emulate the operator's hand in free-drive. ``ripple``
+adds a torque that repeats with the joint angle, as cogging does, and
+``ripple_friction`` one that also takes the sign of the velocity, as a gear
+mesh that drags more at some angles does.
 
 ``realtime=True`` runs a thread at the control rate, like the hardware.
 ``realtime=False`` lets tests advance the simulation with :meth:`step`.
@@ -41,6 +44,9 @@ class SimBackend(ArmBackend):
         viscous_friction: float = 0.2,
         coulomb_friction: float = 0.3,     # N·m, in the range measured on the RS build
         armature: float | np.ndarray = 0.0,   # kg·m² per joint (or scalar), reflected rotor inertia
+        ripple: float | np.ndarray = 0.0,     # N·m per joint (or scalar), amplitude of the angle-locked torque
+        ripple_friction: float | np.ndarray = 0.0,   # N·m, amplitude of its part that opposes the motion
+        ripple_cycles: float = 19.8,          # cycles per rad, as measured on J3
         q0: np.ndarray | None = None,
         model: RobotModel | None = None,
     ) -> None:
@@ -53,6 +59,9 @@ class SimBackend(ArmBackend):
         self.viscous = float(viscous_friction)
         self.coulomb = float(coulomb_friction)
         self.armature = np.broadcast_to(np.asarray(armature, dtype=float), (self._n,)).copy()
+        self.ripple = np.broadcast_to(np.asarray(ripple, dtype=float), (self._n,)).copy()
+        self.ripple_friction = np.broadcast_to(np.asarray(ripple_friction, dtype=float), (self._n,)).copy()
+        self.ripple_cycles = float(ripple_cycles)
 
         self._q = np.zeros(self._n) if q0 is None else np.asarray(q0, dtype=float)[: self._n].copy()
         self._qd = np.zeros(self._n)
@@ -170,7 +179,7 @@ class SimBackend(ArmBackend):
             coulomb = self.coulomb * np.tanh(qd / 0.05)
             tau_ext = self._tau_ext if self._sim_time < self._push_until else 0.0
             M = self._model.mass_matrix(q) + np.diag(self.armature)
-            rhs = tau_explicit - g - coriolis - coulomb + tau_ext
+            rhs = tau_explicit - g - coriolis - coulomb + tau_ext - self.ripple_torque(q, qd)
             # Semi-implicit Euler, two substeps, implicit damping: (M + h D) qd' = M qd + h rhs.
             h = dt / 2.0
             A = M + h * np.diag(damping)
@@ -190,6 +199,11 @@ class SimBackend(ArmBackend):
                     delta = np.clip(target - self._gripper, -max_step, max_step)
                     self._gripper += delta
             self._sim_time += dt
+
+    def ripple_torque(self, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
+        """The angle-locked torque the motors must supply at ``q`` moving at ``qd``, N·m."""
+        phase = 2.0 * np.pi * self.ripple_cycles * np.asarray(q, dtype=float)
+        return self.ripple * np.sin(phase) + self.ripple_friction * np.tanh(np.asarray(qd, dtype=float) / 0.05) * np.cos(phase)
 
     def step(self, n: int = 1, dt: float | None = None) -> None:
         """Advance ``n`` ticks: controller callback, then physics (same order as hardware)."""

@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -16,8 +18,10 @@ def model():
 @pytest.fixture(scope="session")
 def cfg():
     # The shipped configuration alone: a machine's teaching.local.yaml holds gains tuned for the
-    # real arm (a gravity tau_scale, say), which the simulator does not share.
-    return load_config(use_local=False)
+    # real arm (a gravity tau_scale, say), which the simulator does not share. The same goes for
+    # its ripple tables (config/ripple.local.yaml): no file here, a test names its own.
+    cfg = load_config(use_local=False)
+    return dataclasses.replace(cfg, ripple=dataclasses.replace(cfg.ripple, file=""))
 
 
 @pytest.fixture

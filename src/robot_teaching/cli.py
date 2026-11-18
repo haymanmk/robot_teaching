@@ -1,4 +1,4 @@
-"""Command line entry point: ``robot-teaching serve`` and ``robot-teaching plan``."""
+"""Command line entry point: ``robot-teaching serve``, ``plan`` and ``ripple-fit``."""
 
 from __future__ import annotations
 
@@ -22,7 +22,8 @@ def _serve(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     if args.backend == "sim":
         q0 = np.array([float(v) for v in args.sim_q0.split(",")]) if args.sim_q0 else None
-        backend = make_backend("sim", q0=q0, rate=cfg.control.rate)
+        ripple = np.array([float(v) for v in args.sim_ripple.split(",")]) if args.sim_ripple else 0.0
+        backend = make_backend("sim", q0=q0, rate=cfg.control.rate, ripple=ripple)
     else:
         hw_yaml = args.hw_yaml or cfg.hardware_yaml
         if hw_yaml and Path(hw_yaml).expanduser().exists():
@@ -69,6 +70,43 @@ def _plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ripple_fit(args: argparse.Namespace) -> int:
+    from .config import load_config
+    from .ripple import DIRECTIONS, RippleMap, fit_table, read_recording
+
+    cfg = load_config(args.config)
+    out = Path(args.out) if args.out else cfg.ripple_path()
+    if out is None:
+        print("ripple.file is empty in the configuration: give --out", file=sys.stderr)
+        return 1
+    try:
+        recordings = [read_recording(p) for p in args.recordings]
+        fit = fit_table(recordings, step=args.step, smooth=args.smooth)
+        tables = RippleMap.load(out, 64)                  # the other joints' tables are kept
+    except (OSError, ValueError) as e:
+        print(f"ripple-fit failed: {e}", file=sys.stderr)
+        return 1
+    t = fit.table
+    print(f"J{fit.joint + 1}: {len(recordings)} recording(s), top commanded speed {fit.speed:.3f} rad/s")
+    print(f"  table {t.start:.3f} .. {t.stop:.3f} rad in steps of {t.step * 1e3:g} mrad ({len(t.forward)} values per direction)")
+    for name in DIRECTIONS:
+        peak = float(np.max(np.abs(getattr(t, name))))
+        print(f"  {name:8s} {fit.rms[name]:.3f} N·m RMS, peak {peak:.3f} N·m, from {fit.samples[name]} samples; "
+              f"it reproduces {100.0 * fit.explained[name]:.0f} % of the motor torque's fast variation")
+        if peak > float(cfg.ripple.max_torque):
+            print(f"           the peak is above ripple.max_torque ({cfg.ripple.max_torque:g} N·m): the term will be clipped")
+    if args.dry_run:
+        print("dry run: nothing written")
+        return 0
+    replaced = fit.joint in tables.tables
+    tables.tables[fit.joint] = t
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tables.save(out)
+    print(f"{'replaced' if replaced else 'added'} the table of J{fit.joint + 1} in {out}")
+    print("press Reload gains in the pendant (or restart the server), then tick the ripple feed-forward")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="robot-teaching", description="Teach-and-playback interface for the reBot Arm")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -82,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-can-up", action="store_true",
                    help="do not bring the SocketCAN interface up on connect (overrides can.bring_up in teaching.yaml)")
     s.add_argument("--sim-q0", default="0,0.7,1.1,0,0,0", help="initial joint angles for the simulator, comma separated (rad)")
+    s.add_argument("--sim-ripple", default=None,
+                   help="simulator only: amplitude of an angle-locked torque ripple in N·m, one value for every "
+                        "joint or one per joint, comma separated (e.g. 0,0,0.5,0,0,0), to try the ripple feed-forward")
     s.add_argument("--connect", choices=["auto", "manual"], default=None,
                    help="connect to the arm at startup (auto) or from the UI's Connect button (manual); "
                         "default: auto for sim, manual for rebotarm")
@@ -95,6 +136,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--csv", default=None, help="write the sampled trajectory to this CSV file")
     p.add_argument("--config", default=None)
     p.set_defaults(func=_plan)
+
+    r = sub.add_parser("ripple-fit", help="learn a joint's ripple feed-forward table from scope recordings",
+                       description="Learn the ripple feed-forward table of one joint from recordings made with the "
+                                   "scope's Record button while that joint moves back and forth slowly, and store it "
+                                   "in the ripple file of the configuration. A recording made with the table in use "
+                                   "gives the next, better table.")
+    r.add_argument("recordings", nargs="+", help="scope CSV files of one joint")
+    r.add_argument("--out", default=None, help="file to write (default: ripple.file of the configuration)")
+    r.add_argument("--step", type=float, default=0.002, help="rad between table values (default 0.002)")
+    r.add_argument("--smooth", type=float, default=0.05,
+                   help="rad; variation slower than about a cycle per 4 x this is left out of the table (default 0.05)")
+    r.add_argument("--dry-run", action="store_true", help="print the result without writing the file")
+    r.add_argument("--config", default=None)
+    r.set_defaults(func=_ripple_fit)
 
     args = parser.parse_args(argv)
     return args.func(args)

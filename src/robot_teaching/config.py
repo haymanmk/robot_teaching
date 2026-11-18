@@ -98,12 +98,13 @@ class FrictionConfig:
 class FeedforwardConfig:
     """Which torques playback feeds forward on top of the MIT law, and the inverse-dynamics term.
 
-    ``gravity``, ``friction``, ``inertia`` and ``observer`` are the start-up state of the four
-    terms (the pendant and ``POST /api/feedforward`` switch them live, ramped in over the gain
-    fade time): the URDF gravity torque, the Coulomb term of the ``friction`` section, the
-    inverse-dynamics term ``inertia_scale × (M(q) q̈ + C(q, q̇) q̇ + armature · q̈)`` evaluated
-    on the commanded trajectory and clipped to ``±max_torque`` per joint, and the disturbance
-    observer's compensation (the ``observer`` section). Gravity alone is normally enough; hold
+    ``gravity``, ``friction``, ``inertia``, ``observer`` and ``ripple`` are the start-up state
+    of the five terms (the pendant and ``POST /api/feedforward`` switch them live, ramped in
+    over the gain fade time): the URDF gravity torque, the Coulomb term of the ``friction``
+    section, the inverse-dynamics term ``inertia_scale × (M(q) q̈ + C(q, q̇) q̇ + armature · q̈)``
+    evaluated on the commanded trajectory and clipped to ``±max_torque`` per joint, the
+    disturbance observer's compensation (the ``observer`` section) and the position-indexed
+    ripple table (the ``ripple`` section). Gravity alone is normally enough; hold
     and free drive always compensate it. ``armature`` is the rotor inertia reflected through
     the gear (rotor inertia × ratio², kg·m², per joint), which the URDF lacks; identify it on
     the arm. The observer's model uses it too.
@@ -112,6 +113,7 @@ class FeedforwardConfig:
     friction: bool = False
     inertia: bool = False
     observer: bool = False
+    ripple: bool = False
     inertia_scale: float = 1.0
     armature: Any = 0.0          # kg·m², scalar or one value per joint
     max_torque: float = 3.0      # N·m, clip of the term per joint
@@ -121,9 +123,11 @@ class FeedforwardConfig:
 class ObserverConfig:
     """Disturbance observer (:mod:`robot_teaching.observer`): the joint torque the model does
     not explain, estimated every tick from the positions, the velocity estimate and the torque
-    the motors applied. The estimate is always computed and shown in the scope; with the
-    ``feedforward.observer`` switch on, its negative is added to the MIT torque in hold and
-    playback (never in free drive, where it would fight the hand), clipped to ``±max_torque``.
+    the motors applied. The friction feed-forward counts as part of the model, so with it on
+    the estimate is what it leaves over. The estimate is always computed and shown in the
+    scope; with the ``feedforward.observer`` switch on, its negative is added to the MIT torque
+    in hold and playback (never in free drive, where it would fight the hand), clipped to
+    ``±max_torque``.
 
     ``bandwidth`` is the corner frequency of the estimate in Hz (scalar or per joint): higher
     rejects faster and passes more velocity noise. ``torque`` chooses what the observer takes
@@ -133,6 +137,26 @@ class ObserverConfig:
     bandwidth: Any = 2.0          # Hz, scalar or one value per joint
     max_torque: float = 2.0       # N·m, clip of the compensation per joint
     torque: str = "measured"      # measured | commanded
+
+
+@dataclass
+class RippleConfig:
+    """Position-indexed ripple feed-forward (:mod:`robot_teaching.ripple`): a torque read from
+    a table of the joint angle, against cogging and gear-mesh ripple. With the
+    ``feedforward.ripple`` switch on it is added in hold and playback (not in free drive),
+    clipped to ``±max_torque``. A joint without a table gets nothing.
+
+    ``file`` is the YAML with the tables, relative to the configuration file's directory; it
+    is written by ``robot-teaching ripple-fit`` from scope recordings and read at start-up
+    and by Reload gains. No file: no tables. The table is read at the measured angle plus
+    ``lead_time`` × the commanded velocity, which covers the time from the position sample to
+    the moment the torque acts. Its forward and reverse curves are blended with
+    ``tanh(commanded velocity / velocity_scale)``; at rest the term is their mean.
+    """
+    file: str = "ripple.local.yaml"
+    lead_time: float = 0.002      # s
+    velocity_scale: float = 0.02  # rad/s
+    max_torque: float = 1.5       # N·m, clip of the term per joint
 
 
 @dataclass
@@ -191,6 +215,7 @@ class TeachingConfig:
     friction: FrictionConfig = field(default_factory=FrictionConfig)
     feedforward: FeedforwardConfig = field(default_factory=FeedforwardConfig)
     observer: ObserverConfig = field(default_factory=ObserverConfig)
+    ripple: RippleConfig = field(default_factory=RippleConfig)
     jog: JogConfig = field(default_factory=JogConfig)
     gripper: GripperConfig = field(default_factory=GripperConfig)
     can: CanConfig = field(default_factory=CanConfig)
@@ -206,6 +231,15 @@ class TeachingConfig:
         if not p.is_absolute():
             base = self.source_path.parent.parent if self.source_path else PROJECT_ROOT
             p = base / p
+        return p
+
+    def ripple_path(self) -> Path | None:
+        """The ripple table file (it need not exist), None when ``ripple.file`` is empty."""
+        if not self.ripple.file:
+            return None
+        p = Path(self.ripple.file).expanduser()
+        if not p.is_absolute():
+            p = (self.source_path.parent if self.source_path else DEFAULT_CONFIG_PATH.parent) / p
         return p
 
 
@@ -231,6 +265,7 @@ _SECTIONS = {
     "friction": FrictionConfig,
     "feedforward": FeedforwardConfig,
     "observer": ObserverConfig,
+    "ripple": RippleConfig,
     "jog": JogConfig,
     "gripper": GripperConfig,
     "can": CanConfig,

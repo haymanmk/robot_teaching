@@ -17,9 +17,10 @@ CAN bus), built on Seeed's [`reBotArm_control_py`](https://github.com/Seeed-Proj
   velocity-limit curve), tracked by closed-loop IK and re-timed to the limits. Setpoints stream at
   500 Hz in MIT mode with gravity feed-forward, and optionally Coulomb-friction and
   inverse-dynamics feed-forward (the URDF's inertia and Coriolis terms plus a per-joint armature
-  for the reflected rotor inertia, evaluated on the commanded motion) and the compensation of a
-  disturbance observer (the joint torque the model does not explain, estimated every tick),
-  each term switchable live from the pendant. Speed override, loop and smooth stop.
+  for the reflected rotor inertia, evaluated on the commanded motion), the compensation of a
+  disturbance observer (the joint torque the model does not explain, estimated every tick)
+  and a ripple table (the cogging and gear-mesh torque that repeats with the joint angle,
+  learned from a recording), each term switchable live from the pendant. Speed override, loop and smooth stop.
 * **Simulator** with the same interface as the hardware, so the UI and planner run and
   are tested without the arm.
 
@@ -37,12 +38,14 @@ robot_teaching/
 │   ├── model.py                    Pinocchio model wrapper: FK, IK, Jacobian, g(q), M(q), C(q, q̇), limits
 │   ├── observer.py                 disturbance observers: the joint torque the model does not explain
 │                                   (the controller's fourth feed-forward term; docs/disturbance_observer.md)
+│   ├── ripple.py                   ripple feed-forward: a torque table per joint angle and direction, and
+│                                   learning it from scope recordings (the fifth term)
 │   ├── program.py                  TaughtPoint / Program / ProgramStore (JSON)
 │   ├── planning/                   quintic profiles, joint spline, Cartesian line, program → trajectory
 │   ├── controller.py               500 Hz state machine: HOLD / FREE_DRIVE / PLAYBACK / DISABLED
 │   ├── backend/                    ArmBackend protocol, SimBackend, RebotArmBackend
 │   ├── server/                     FastAPI (REST + WebSocket), the static teach-pendant UI and the offline plotter
-│   └── cli.py                      `robot-teaching serve` / `robot-teaching plan`
+│   └── cli.py                      `robot-teaching serve` / `plan` / `ripple-fit`
 ├── tests/                          pytest suite (runs against the simulator)
 └── third_party/reBotArm_control_py git submodule (vendor library: actuator, kinematics, dynamics)
 ```
@@ -72,6 +75,9 @@ Simulator (no hardware):
 uv run robot-teaching serve --backend sim
 # UI  http://127.0.0.1:8000/     API docs  http://127.0.0.1:8000/docs
 ```
+
+`--sim-ripple 0,0,0.5,0,0,0` gives the simulated joints an angle-locked torque ripple of
+that amplitude (N·m, here on J3 only), to try the ripple feed-forward without the arm.
 
 Real arm. Check that `third_party/reBotArm_control_py/config/rebotarm.yaml` selects
 `rebotarm_rs.yaml`, and make sure the motor zero has been set once with the vendor's
@@ -161,9 +167,10 @@ window between 0.5 s and 60 s, the length of the history the server keeps. **Pau
 the traces: the time axis then shows the controller clock and dragging a trace looks back in
 time; **Resume** returns to live. The readout stays live. **Record** writes every sample of
 the selected joint to a CSV file that downloads on **Stop**, with the columns `t_s`, `joint`,
-`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm`, the four feed-forward terms as
+`q_cmd_rad`, `q_rad`, `err_rad`, `tau_cmd_Nm`, `tau_meas_Nm`, the feed-forward terms as
 applied `tau_g_Nm`, `tau_f_Nm`, `tau_i_Nm`, `tau_o_Nm` (the observer's compensation), the
-observer's disturbance estimate `tau_d_Nm`, and `run` (`run` increments when
+observer's disturbance estimate `tau_d_Nm`, the ripple table's torque `tau_r_Nm`, and `run`
+(`run` increments when
 the server restarts, where `t_s` starts again from zero); **Plot…** opens the offline plotter for
 such a file (below). **Spectrum** adds a fourth strip
 with the amplitude spectrum (dB) of the tracking error, a position or a torque over the samples
@@ -198,8 +205,8 @@ can be dragged to set its height by hand instead, until **Auto** restores it. Th
 tracking-error strip shows the position error (° measured − commanded) or the torque error
 (N·m reported by the motor − commanded by the MIT law), which the spectrum offers too. The
 torque strip also draws the feed-forward the command contains and the disturbance observer's
-estimate, and the spectrum offers the gravity, friction, inertia and observer terms one by
-one; a recording made before these columns existed still loads, without them.
+estimate, and the spectrum offers the gravity, friction, inertia, observer and ripple terms
+one by one; a recording made before these columns existed still loads, without them.
 **Compare** overlays a second
 recording, B, on the same axes, dashed and a little lighter, with its start on the start of the
 first run; **offset** (or Shift+drag on a trace) slides B in time and **Align starts** puts it
@@ -230,8 +237,9 @@ the taught configuration (otherwise the planner refuses and suggests a joint mov
 | `free_drive` | compliant gains, integral term, `tau_scale` per joint, release / re-lock thresholds, velocity filter |
 | `hold` | stiff gains (null = the vendor's per-joint MIT gains) |
 | `friction` | Coulomb friction per joint (N·m) fed forward during playback with the sign of the commanded velocity, so slow joints do not stick and slip; applied while `feedforward.friction` is on, 0 disables a joint |
-| `feedforward` | the start-up state of the four feed-forward terms, `gravity` / `friction` / `inertia` / `observer` (default: gravity only), and the inverse-dynamics term: `inertia_scale`, per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
+| `feedforward` | the start-up state of the five feed-forward terms, `gravity` / `friction` / `inertia` / `observer` / `ripple` (default: gravity only), and the inverse-dynamics term: `inertia_scale`, per-joint `armature` (rotor inertia × gear ratio², kg·m², which the URDF lacks), `max_torque` clip |
 | `observer` | the disturbance observer: `bandwidth` of the estimate (Hz, scalar or per joint), `max_torque` clip of its compensation, and `torque`, what it takes as the applied torque (`measured` or `commanded`) |
+| `ripple` | the ripple feed-forward: `file` with the tables (written by `robot-teaching ripple-fit`, beside this file, default `ripple.local.yaml`), `lead_time` by which the table is read ahead of the measured angle, `velocity_scale` of the blend between its two directions, `max_torque` clip |
 | `jog` | step sizes offered in the UI, jog speed, max joint jump accepted from a Cartesian IK step |
 | `gripper` | closed / open motor positions (rad), settle time, gains |
 | `can` | bring the SocketCAN interface up on Connect (`bring_up`) and at which `bitrate` |
@@ -260,7 +268,7 @@ feedforward:
 Both files are read when the server starts. The gains can be re-read without a restart:
 edit the YAML and press **Reload gains** (top bar, next to Connect) or `POST /api/gains/reload`. That
 re-applies the hold, free-drive and gripper kp/kd, `free_drive.tau_scale`, the free-drive
-thresholds, the friction feed-forward, the inverse-dynamics feed-forward and the observer's settings, fading the gains in over
+thresholds, the friction feed-forward, the inverse-dynamics feed-forward, the observer's settings and the ripple tables (the file is read again), fading the gains in over
 `free_drive.transition_duration`; it works in hold, free drive and while disconnected, not
 during playback. Limits, jog steps and the home position still need a restart.
 `GET /api/gains` shows the values in use.
@@ -285,8 +293,13 @@ While the motors are enabled, `src/robot_teaching/observer.py` estimates every t
 torque the model does not explain: friction, the error of the gravity and inertia model, and
 anything pushing on the arm. It needs no acceleration measurement, only the positions, the
 velocity estimate and the torque the motors applied (`observer.torque`: their own report, or
-the MIT law the host evaluated at the previous tick), and its model is the feed-forward's
-(the URDF with `free_drive.tau_scale` and `feedforward.armature`). The estimate is the
+the MIT law the host evaluated at the previous tick), and its model is the feed-forward's:
+the URDF with `free_drive.tau_scale` and `feedforward.armature`, and the friction term when
+that is switched on. The observer therefore estimates what the other terms leave over, and
+the switches combine: with **friction** on, the feed-forward cancels the configured friction
+at once, reversals included, and the observer corrects what that value gets wrong; with it
+off, the observer carries the whole friction, about `1 / (2π · observer.bandwidth)` seconds
+late at each reversal. The estimate is the
 **disturbance estimate** trace of the scope's torque strip and the `tau_d_Nm` column of a
 recording, whether the switch is on or not. With the switch on, its negative is added to the
 MIT torque, clipped to `observer.max_torque`:
@@ -302,10 +315,54 @@ In the simulator (0.3 N·m of Coulomb friction per joint) it cuts the largest pl
 tracking error of the test program from 9.9 to 4.3 mrad at the shipped 2 Hz, and removes the
 4 mrad hold sag of an arm 10 % heavier than its model. On the real arm, watch the estimate
 with the switch off first: it should be smooth and of the size of the friction. If it is
-noisy, lower `observer.bandwidth`. **Do not switch the observer and the friction term on
-together yet:** the observer reports the whole friction and compensates it a second time
-(measured on J3: the error turns from lagging to leading). `docs/disturbance_observer.md` has
-the derivation, the tests and the first recordings on the arm.
+noisy, lower `observer.bandwidth`. `docs/disturbance_observer.md` has the derivation, the
+tests and the first recordings on the arm.
+
+**Ripple feed-forward.** A fifth switch, **ripple** (`feedforward.ripple`, or
+`{"ripple": true}` to `POST /api/feedforward`), adds a torque read from a table of the joint
+angle. It is aimed at the ripple the tracking error shows while a joint moves: cogging and
+gear mesh add a torque that repeats with the angle (on J3 about 20 cycles per radian, a few
+tenths of a N·m). The position loop only pushes back once the error exists, and the observer
+answers 20 to 40 ms late, which at the ripple's frequency cancels almost nothing
+(`docs/disturbance_observer.md`, "Why the observer does not remove the ripple"). A table has
+no delay. It holds one curve per direction of travel, because the two differ on this arm;
+the curves are blended with the commanded velocity, and at rest the term is their mean. The
+table is read at the measured angle. The term acts in hold and playback and fades out in free
+drive; a joint without a table gets nothing, so the switch is safe to leave on.
+
+The table is learned from the arm, one joint at a time:
+
+1. Teach a program that moves only that joint back and forth over the angles you want
+   covered, and loop it. Leave **ripple** and **observer** unticked for the first table.
+2. Select the joint in the scope, press **Record**, play the program at 25 % speed or slower
+   for three or four strokes each way, and **Stop**. Slow matters: the faster the joint
+   moves, the more the feedback torque lags the ripple it is answering.
+3. Run `uv run robot-teaching ripple-fit <recording.csv>` (several recordings of the same
+   joint may be given). It prints the angles covered, the size of the table and how much of
+   the motor torque's fast variation it reproduces, and writes the joint's table into
+   `config/ripple.local.yaml`, keeping the other joints' tables. `--dry-run` only prints.
+4. Press **Reload gains**, tick **ripple** and play again. The ripple in the error strip
+   should be smaller.
+5. Record again at the same slow speed, now with **ripple** ticked, and run `ripple-fit` on
+   the new recording. The motor torque then contains the table's own contribution plus what
+   the feedback still had to add, so the fit gives the next, better table. One or two rounds
+   are enough.
+
+How it is built: the motor torque of the moving samples is averaged in 2 mrad bins of
+measured angle per direction, and a smooth trend along the angle (gravity, friction) is
+removed, so only what changes faster than about a cycle per 0.2 rad goes into the table; the
+slow part stays with the other terms. Outside the recorded angles the table is zero and it
+comes down to zero smoothly at its ends. The observer is told about the term, as it is about
+the friction term, so the two do not cancel the ripple twice. A table belongs to one arm
+(`*.local.yaml` is not under version control); learn it again after the motor's zero or its
+anti-cogging calibration has changed.
+
+In the simulator, with a 0.5 N·m ripple on J3 (`--sim-ripple`), the position ripple at the
+learning speed goes from 1.67 mrad to 0.69, 0.25 and 0.10 mrad over three rounds, and the
+last table leaves 0.07 of 0.72 mrad at twice that speed; the observer alone leaves 0.77. On
+the real arm it has not been tried yet. Fitted to the J3 recordings already taken, the table
+is about 0.5 N·m RMS per direction, and two recordings made minutes apart give tables that
+agree to within 9 %.
 
 **Calibrate on your arm before trusting the defaults:** the gripper `open_position`
 (the vendor examples use 5.0 rad), the free-drive gains (start with one joint enabled,
@@ -338,7 +395,9 @@ The suite covers the program model, the planners (limits, continuity, straightne
 the controller state machine on the simulator (hold, jog, free-drive lock/follow,
 playback tracking and gripper events, stop ramp, e-stop, error fallback), the disturbance
 observers against known pushes, friction and a hidden armature in the simulator, the observer
-feed-forward term in hold, playback and free drive, and the HTTP / WebSocket API. The tests
+feed-forward term in hold, playback and free drive, the ripple table (its fit on synthetic
+strokes, the term in the controller, and the record, fit and replay loop on a simulated arm
+with a ripple), and the HTTP / WebSocket API. The tests
 load `config/teaching.yaml` alone: values in a `teaching.local.yaml` tuned for the real arm
 do not apply to the simulator. `tests/test_dsp.py` runs the scope's spectrum maths under Node
 (`node tests/dsp_check.js`) and `tests/test_record.py` the scope recording reader and the
@@ -353,7 +412,11 @@ not installed.
   not implemented.
 * The vendor's position request every cycle plus the command frame is near the CAN
   bandwidth at 500 Hz with 7 motors; lower `control.rate` if the bus saturates.
-* The disturbance observer has been run on the arm on one joint only (J3). With the friction
-  feed-forward also on, friction is compensated twice; use one or the other for now. Its
-  estimate contains friction as well as any push: there is no external-force estimate yet,
-  and no admittance control. `docs/disturbance_observer.md` lists the order of work.
+* The disturbance observer has been run on the arm on one joint only (J3), and not yet
+  since it was made to work together with the friction feed-forward. Its estimate contains
+  the friction the feed-forward does not cover as well as any push: there is no
+  external-force estimate yet, and no admittance control. `docs/disturbance_observer.md`
+  lists the order of work.
+* The ripple feed-forward has only been run in the simulator. On the arm, a table covers the
+  angles that were recorded and nothing else, and how well a table learned at one speed and
+  load holds at another is not measured yet.

@@ -43,6 +43,7 @@ class FeedforwardRequest(BaseModel):
     friction: bool | None = None
     inertia: bool | None = None
     observer: bool | None = None
+    ripple: bool | None = None
 
 
 class JointJog(BaseModel):
@@ -347,7 +348,7 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
 
     @app.get("/api/feedforward")
     def get_feedforward():
-        """Which feed-forward terms are switched on: gravity, friction, inertia, observer."""
+        """Which feed-forward terms are switched on: gravity, friction, inertia, observer, ripple."""
         return controller.feedforward()
 
     @app.post("/api/feedforward")
@@ -355,11 +356,12 @@ def create_app(controller: TeachController, cfg: TeachingConfig, store: ProgramS
         """Switch feed-forward terms on or off; a term not given keeps its state.
 
         A change ramps in over ``free_drive.transition_duration``, during playback too. Hold
-        and free drive always compensate gravity; the observer's compensation acts in hold and
-        playback, never in free drive. The start-up state comes from ``feedforward.gravity`` /
-        ``friction`` / ``inertia`` / ``observer`` in teaching.yaml.
+        and free drive always compensate gravity; the observer's compensation and the ripple
+        table act in hold and playback, never in free drive. The start-up state comes from
+        ``feedforward.gravity`` / ``friction`` / ``inertia`` / ``observer`` / ``ripple`` in
+        teaching.yaml.
         """
-        res = _result(controller.set_feedforward(req.gravity, req.friction, req.inertia, req.observer))
+        res = _result(controller.set_feedforward(req.gravity, req.friction, req.inertia, req.observer, req.ripple))
         return res | {"feedforward": controller.feedforward()}
 
     @app.get("/api/state")

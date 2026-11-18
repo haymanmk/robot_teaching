@@ -4,8 +4,9 @@
 and the controller runs it every tick: its estimate is a scope trace, and a fourth
 feed-forward switch feeds it back in hold and playback (section 4). Both are tested against
 the simulator. A first pair of recordings on the arm (J3, section 4) confirms the estimate
-and the torque input, and shows that the observer and the friction feed-forward must not be
-switched on together as things stand. The rest is a design note. It records what the nonlinear
+and the torque input. They also showed the observer and the friction feed-forward cancelling
+friction twice when both were on, which has since been corrected in the controller and
+checked on the simulator, not yet on the arm. The rest is a design note. It records what the nonlinear
 disturbance observer (NDOB) of Mohammadi et al. gives on this arm, the concerns that came
 out of checking it against the arm's model and control loop, and the form and order of work
 suggested instead. The numbers were computed from the URDF with the snippets below
@@ -226,6 +227,13 @@ the motors are enabled, with the controller's own filtered velocity estimate.
 - **The torque it is given** is the one applied since the previous tick (`observer.torque`):
   `measured`, the motors' report, falling back per joint to the command where a motor
   reports none; or `commanded`, the MIT law the host evaluated at the previous tick.
+- **The friction feed-forward is taken out of that torque first.** It is a model of a
+  disturbance, like the gravity scale, but one the observer's equations have no place for.
+  Left in the applied torque, it does not change what the observer reports (the whole
+  friction), so the compensation would cancel friction a second time. Taken out, the
+  estimate is what the feed-forward leaves over, and the two add up to the friction. The
+  inertia feed-forward stays in: the observer's model already expects the torque an
+  acceleration needs.
 - **The estimate** $\hat\tau_d$ is the trace field `tau_d`: the scope's "disturbance
   estimate" and the `tau_d_Nm` column of a recording, whatever the switch says.
 - **The compensation** is the trace field `tau_o` $= -w\,\mathrm{clip}(\hat\tau_d,
@@ -284,12 +292,64 @@ observer switch off and one with it on (`data/dob_test/`, not under version cont
   friction, and the friction feed-forward is part of the torque it is told about, so it
   reports the whole friction and its compensation stacks on the feed-forward. The mean error
   went from +0.03 / +1.34 mrad (moving up / down) to +0.96 / −2.07 mrad: from lagging to
-  leading, with the RMS barely changed (2.24 to 1.94 mrad). Until the observer is given the
-  friction feed-forward as part of its model, use one or the other.
+  leading, with the RMS barely changed (2.24 to 1.94 mrad). *Corrected the same day:* the
+  controller now takes the friction feed-forward out of the torque the observer is given
+  ("In the controller" above). On the simulator, with the feed-forward matched to its
+  0.3 N·m of friction, the joints lagged by 4.7 mrad with neither term, led by 4.3 mrad with
+  both before the correction, and are within 0.3 mrad with both after it; the largest error
+  is then 4.1 mrad against 8.5 mrad with neither, 4.5 with the friction term alone and 4.2
+  with the observer alone. The recordings on the arm have not been repeated yet.
 - **What the observer can reach.** With it off the error is 1.8 mrad RMS below 1 Hz
   (friction and the gravity offset, which it can remove), 1.0 mrad RMS between 1 and 15 Hz
   (mostly the position-locked ripple near 5.6 Hz at this speed, above its bandwidth) and
   0.14 mrad above.
+
+### Why the observer does not remove the ripple (2026-11-17)
+
+Five recordings of the same J3 stroke (`data/dob_test/`): observer off and on at 50 % speed
+with a 2 Hz bandwidth, on with 4 Hz, and off and on at 100 %. The ripple is the
+position-locked one of `docs/tracking_error_analysis.md`, 19.8 cycles per rad, so 5.6 Hz at
+50 % speed and 11 Hz at 100 %.
+
+- **The torque traces show the reaction, not the ripple.** The motor's reported torque comes
+  from its current; cogging and gear mesh act on the rotor after it, so they are in neither
+  the commanded nor the reported torque. With the observer off, the reported torque ripple
+  is the motor's PD acting on the position ripple: 566 N·m/rad at −103° against 716 at −102°
+  from $k_p$ = 150 and $k_d$ = 20. Feedback needs the error to exist before it pushes back.
+- **The estimate arrives late.** Against the ripple torque rebuilt without lag from the
+  recorded position and torque (URDF inertia for J3, 0.246 kg·m², no armature), the estimate
+  is 0.5 times its size and 31 to 39 ms (63° to 79°) late at 2 Hz, 0.6 to 0.7 times and 21 to
+  26 ms (42° to 51°) late at 4 Hz, and 0.4 times and 26 ms (104°) late at 100 % speed.
+  Subtracting it leaves 90 to 97 %, 76 to 81 % and 116 to 121 % of the ripple torque. A
+  first-order estimate with corner $f_c$ leaves $f/\sqrt{f^2+f_c^2}$ of a disturbance at
+  $f$: 94 % and 81 % for the first two. Removing 90 % would need $f_c \approx 10 f$, 56 Hz
+  at 50 % speed, against a velocity estimate filtered at 5.3 Hz.
+- **The position ripple confirms it:** 0.52 / 0.69 mrad RMS (up / down) with the observer
+  off, 0.64 / 0.80 at 2 Hz and 0.70 / 0.74 at 4 Hz.
+
+The ripple repeats with the joint angle, so it is fed forward from a table of the angle
+instead (`src/robot_teaching/ripple.py`, the fifth feed-forward term; README, "Ripple
+feed-forward"). What the recordings say about such a table:
+
+- The position-locked part of the motor torque is repeatable: tables fitted to two 25 %
+  recordings made minutes apart agree to within 9 % RMS, and same-day recordings at 50 % and
+  at 100 % to about 30 %. A table from the 25 % recordings of 2026-10-29 supplies 40 to 60 %
+  of what the feedback applied in the 50 % recordings three weeks later.
+- It differs between the two directions of travel and is not a single sine (at 50 %, one
+  sine at 19.8 cycles per rad explains 85 % of the detrended error moving up and a third
+  moving down), hence one curve per direction and a table, not a harmonic model.
+- Adding the URDF's $M_{33}\,\ddot q$ to the motor torque made the curves of different
+  speeds and directions agree less, not more, so the table is taken from the motor torque
+  alone at low speed, where the inertia term is small, and refined by repeating the
+  recording with the table in use: the feedback's remaining share then moves into the table.
+  With the arm's gains the share left after one round at 25 % speed should be about 20 %.
+- The observer's model has no ripple either, so the table's torque is taken out of the
+  torque the observer is given, like the friction term's. Without that the simulator shows
+  the two cancelling the ripple twice (0.57 mrad of position ripple against 0.11).
+
+Simulator, 0.5 N·m of ripple on J3: 1.67 mrad of position ripple at the learning speed
+becomes 0.69, 0.25 and 0.10 mrad over three rounds; the observer alone leaves 0.96. None of
+this has been run on the arm yet.
 
 ## 5. Concerns specific to this arm
 

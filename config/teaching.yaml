@@ -73,11 +73,13 @@ feedforward:
   # checkboxes (POST /api/feedforward) switch them live, a change ramping in over
   # free_drive.transition_duration, during playback too. Hold and free drive always
   # compensate gravity. `observer` adds the disturbance observer's compensation (the
-  # observer section below), in hold as well as in playback.
+  # observer section below) and `ripple` the position-indexed ripple table (the ripple
+  # section below), both in hold as well as in playback.
   gravity: true
   friction: false
   inertia: false
   observer: false
+  ripple: false
   # Inverse-dynamics feed-forward during playback, on top of gravity and friction:
   #   inertia_scale * (M(q)·qdd + C(q,qd)·qd + armature·qdd)
   # evaluated on the commanded trajectory and clipped to ±max_torque per joint. With the
@@ -89,13 +91,15 @@ feedforward:
   # Reloadable with the gains (the switches above are not: they keep their live state).
   inertia_scale: 1.0
   armature: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-  max_torque: 3.0        # N·m
+  max_torque: 4.0        # N·m
 
 observer:
   # Disturbance observer: every tick it estimates the joint torque the model does not
   # explain (friction, model error, anything pushing on the arm) from the positions, the
   # velocity estimate and the torque the motors applied. Its model is the feed-forward's:
-  # the URDF with free_drive.tau_scale on gravity and feedforward.armature on the inertia.
+  # the URDF with free_drive.tau_scale on gravity and feedforward.armature on the inertia,
+  # and the friction term while that is switched on, so the observer estimates what the
+  # other terms leave over and can be combined with them.
   # The estimate is always computed and shown in the scope ("disturbance estimate"). With
   # feedforward.observer on, its negative is added to the MIT torque in hold and playback,
   # clipped to ±max_torque per joint; in free drive it fades out, since there the
@@ -109,6 +113,23 @@ observer:
   torque: measured       # what the observer takes as the applied torque: `measured`, the
                          # motors' report (the command where a motor reports none), or
                          # `commanded`, the MIT law evaluated on the host at the last tick
+
+ripple:
+  # Ripple feed-forward: a torque read from a table of the joint angle, against the cogging
+  # and gear-mesh ripple that repeats with the angle (about 20 cycles per rad on J3). The
+  # position loop and the observer answer that ripple too late to cancel it; a table has no
+  # delay. With feedforward.ripple on, the term is added in hold and playback, clipped to
+  # ±max_torque per joint; in free drive it fades out. A joint without a table gets nothing.
+  # The tables are learned from scope recordings and belong to one arm:
+  #   robot-teaching ripple-fit data/scope_J3_slow.csv
+  # writes the table of the recorded joint into `file` (README, "Ripple feed-forward").
+  # Reloadable with the gains: Reload gains reads the file again.
+  file: ripple.local.yaml   # relative to this file's directory; git ignores *.local.yaml
+  lead_time: 0.002       # s, the table is read at the measured angle + lead_time × commanded
+                         # velocity: about the time from the position sample to the torque
+  velocity_scale: 0.02   # rad/s, the forward and reverse curves are blended with
+                         # tanh(commanded velocity / velocity_scale); at rest: their mean
+  max_torque: 1.5        # N·m, the most the term may add per joint
 
 jog:
   joint_steps_deg: [0.5, 1.0, 5.0]

@@ -448,7 +448,7 @@ def test_inertia_feedforward_reduces_acceleration_error(cfg, model):
     _, tau_clipped = _tracking(_fast(cfg, armature=armature, inertia_scale=1.0, max_torque=0.1), model, armature)
     assert np.max(tau_clipped) <= 0.1 + 1e-9
     ctl = TeachController(SimBackend(realtime=False, q0=L_POSE, model=model), _fast(cfg, armature=armature))
-    assert ctl.gains()["feedforward"] == {"gravity": True, "friction": True, "inertia": True, "observer": False,
+    assert ctl.gains()["feedforward"] == {"gravity": True, "friction": True, "inertia": True, "observer": False, "ripple": False,
                                           "inertia_scale": 1.0, "armature": [armature] * 6, "max_torque": 3.0}
 
 
@@ -463,7 +463,7 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
     ctl = TeachController(sim, base)
     ctl.start()
     s = settle(sim, ctl, 300)
-    assert ctl.feedforward() == {"gravity": True, "friction": False, "inertia": False, "observer": False} == s.feedforward
+    assert ctl.feedforward() == {"gravity": True, "friction": False, "inertia": False, "observer": False, "ripple": False} == s.feedforward
     traj = plan_program(ctl.model, _program(), s.q_target, base, gripper_start=s.gripper_target)
     assert ctl.play(traj, speed=1.0, loop=True)[0]
     for _ in range(50):
@@ -472,8 +472,8 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
         assert np.all(s.tau_f == 0.0) and np.all(s.tau_i == 0.0)
         assert np.allclose(sim._cmd[4], s.tau_g), "gravity alone is sent"
     ok, msg = ctl.set_feedforward(friction=True, inertia=True)
-    assert ok and msg == "feed-forward gravity on, friction on, inertia on, observer off"
-    assert ctl.feedforward() == {"gravity": True, "friction": True, "inertia": True, "observer": False}
+    assert ok and msg == "feed-forward gravity on, friction on, inertia on, observer off, ripple off"
+    assert ctl.feedforward() == {"gravity": True, "friction": True, "inertia": True, "observer": False, "ripple": False}
     early = np.zeros(ctl.n)
     for _ in range(12):                                   # 0.24 s: half of the 0.5 s ramp at most
         s = settle(sim, ctl, 10)
@@ -488,7 +488,7 @@ def test_feedforward_switches_default_to_gravity_and_ramp_in(cfg, model):
     assert len(chunk["tau_g"]) == len(chunk["t"]) == len(chunk["tau_f"]) == len(chunk["tau_i"]) == 20
     assert np.allclose(chunk["tau_g"], chunk["tau_g"]) and max(abs(v) for v in chunk["tau_g"]) > 0.0
     ok, msg = ctl.set_feedforward(gravity=False)
-    assert ok and msg == "feed-forward gravity off, friction on, inertia on, observer off"
+    assert ok and msg == "feed-forward gravity off, friction on, inertia on, observer off, ripple off"
     settle(sim, ctl, 300)                                 # the ramp is over
     s = settle(sim, ctl, 1)
     assert s.mode == Mode.PLAYBACK.value and np.allclose(sim._cmd[4], s.tau_f + s.tau_i), "no gravity in the sent torque"
@@ -567,7 +567,7 @@ def test_observer_compensation_removes_a_gravity_model_error_in_hold(cfg, model)
     missing = s.tau_g * (1.1 / np.asarray(ctl.gains()["free_drive"]["tau_scale"]) - 1.0)
     assert np.allclose(s.tau_d, -missing, atol=0.02), "the estimate is the gravity torque the model lacks"
     ok, msg = ctl.set_feedforward(observer=True)
-    assert ok and msg.endswith("observer on")
+    assert ok and "observer on" in msg
     s = settle(sim, ctl, 20)                                  # 40 ms into the 0.5 s ramp
     assert 0.0 < np.max(np.abs(s.tau_o)) < 0.5 * np.max(np.abs(s.tau_d)), "the term ramps in, it does not step"
     s = settle(sim, ctl, 1500)
@@ -641,3 +641,43 @@ def test_reload_gains_updates_the_observer(cfg, model):
     s = settle(sim, ctl, 1500)
     assert np.max(np.abs(s.tau_d)) < 0.02, s.tau_d
     ctl.shutdown()
+
+
+def _playback_lead(cfg, model):
+    """Play the test program once; return the largest |error|, the mean error along the commanded
+    velocity (positive: the joints run ahead of their setpoints) and the largest |tau_d|."""
+    sim, ctl = _observer_rig(cfg, model)
+    s = settle(sim, ctl, 500)
+    traj = plan_program(ctl.model, _program(), s.q_target, cfg, gripper_start=s.gripper_target)
+    assert ctl.play(traj, speed=1.0)[0]
+    err, tau_d, lead = 0.0, 0.0, []
+    while True:
+        s = settle(sim, ctl, 1)
+        if s.mode != Mode.PLAYBACK.value:
+            break
+        vel, e = sim._cmd[1], s.q - s.q_target
+        moving = np.abs(vel) > 0.1
+        if moving.any():
+            lead.append(np.mean((e * np.sign(vel))[moving]))
+        err, tau_d = max(err, np.max(np.abs(e))), max(tau_d, np.max(np.abs(s.tau_d)))
+    ctl.shutdown()
+    return err, float(np.mean(lead)), tau_d
+
+
+def test_observer_leaves_the_friction_feedforward_its_share(cfg, model):
+    # The simulator's joints have 0.3 N·m of Coulomb friction. The friction feed-forward cancels
+    # it; the observer, whose model has no friction, must then report only what is left over.
+    # If it reported the whole friction (the feed-forward being part of the torque it is told
+    # about), both would cancel it and the joints would run ahead by as much as they lagged.
+    friction_only = _with_friction(cfg, 0.3)
+    observer_only = _with_observer(cfg)
+    both = _with_observer(friction_only)
+    err_neither, lead_neither, _ = _playback_lead(cfg, model)
+    err_f, lead_f, tau_d_f = _playback_lead(friction_only, model)
+    err_o, lead_o, tau_d_o = _playback_lead(observer_only, model)
+    err_both, lead_both, tau_d_both = _playback_lead(both, model)
+    assert lead_neither < -3e-3, "without either the joints lag"
+    assert abs(lead_both) < 1e-3, f"together they neither lag nor lead ({lead_both * 1e3:+.2f} mrad)"
+    assert err_both < 0.6 * err_neither and err_both <= min(err_f, err_o) + 2e-4, (err_neither, err_f, err_o, err_both)
+    assert tau_d_o > 0.4, "alone, the observer's estimate is the whole friction"
+    assert tau_d_f < 0.6 * tau_d_o and tau_d_both < 0.6 * tau_d_o, "with the feed-forward on, only the remainder"

@@ -34,4 +34,16 @@ def test_hardware_yaml_resolves_relative_to_the_config_file(tmp_path):
 
 def test_feedforward_switches_default_to_gravity_only():
     ff = load_config(use_local=False).feedforward
-    assert (ff.gravity, ff.friction, ff.inertia, ff.observer) == (True, False, False, False)
+    assert (ff.gravity, ff.friction, ff.inertia, ff.observer, ff.ripple) == (True, False, False, False, False)
+
+
+def test_ripple_file_resolves_relative_to_the_config_file(tmp_path):
+    base = tmp_path / "teaching.yaml"
+    base.write_text("ripple:\n  file: tables/ripple.yaml\n")
+    assert load_config(base).ripple_path() == tmp_path / "tables" / "ripple.yaml", "the file need not exist"
+    base.write_text("ripple:\n  file: /somewhere/ripple.yaml\n")
+    assert str(load_config(base).ripple_path()) == "/somewhere/ripple.yaml"
+    base.write_text("ripple:\n  file: ''\n")
+    assert load_config(base).ripple_path() is None
+    base.write_text("hold:\n  kp: 1.0\n")
+    assert load_config(base).ripple_path() == tmp_path / "ripple.local.yaml", "the default sits beside the config"

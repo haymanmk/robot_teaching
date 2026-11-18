@@ -48,19 +48,24 @@ def test_config_and_state(client):
 
 
 def test_feedforward_switches(client, cfg):
-    assert client.get("/api/feedforward").json() == {"gravity": True, "friction": False, "inertia": False, "observer": False}
+    assert client.get("/api/feedforward").json() == {"gravity": True, "friction": False, "inertia": False, "observer": False, "ripple": False}
     r = client.post("/api/feedforward", json={"inertia": True})
     assert r.status_code == 200, r.text
-    assert r.json()["feedforward"] == {"gravity": True, "friction": False, "inertia": True, "observer": False}
-    assert r.json()["message"] == "feed-forward gravity on, friction off, inertia on, observer off"
+    assert r.json()["feedforward"] == {"gravity": True, "friction": False, "inertia": True, "observer": False, "ripple": False}
+    assert r.json()["message"] == "feed-forward gravity on, friction off, inertia on, observer off, ripple off"
     g = client.get("/api/gains").json()["feedforward"]
     assert g["inertia"] is True and g["friction"] is False and g["inertia_scale"] == 1.0
     client.sim.step(5)
-    assert client.get("/api/state").json()["state"]["feedforward"] == {"gravity": True, "friction": False, "inertia": True, "observer": False}
+    assert client.get("/api/state").json()["state"]["feedforward"] == {"gravity": True, "friction": False, "inertia": True, "observer": False, "ripple": False}
     assert client.post("/api/feedforward", json={"friction": "maybe"}).status_code == 422
     assert client.post("/api/feedforward", json={}).json()["feedforward"]["inertia"] is True, "nothing given: nothing changes"
     r = client.post("/api/feedforward", json={"observer": True})
-    assert r.json()["feedforward"]["observer"] is True and r.json()["message"].endswith("observer on")
+    assert r.json()["feedforward"]["observer"] is True and "observer on" in r.json()["message"]
+    r = client.post("/api/feedforward", json={"ripple": True})
+    assert r.json()["feedforward"]["ripple"] is True and r.json()["message"].endswith("ripple on")
+    assert client.get("/api/gains").json()["ripple"] == {
+        "joints": [], "lead_time": cfg.ripple.lead_time, "velocity_scale": cfg.ripple.velocity_scale,
+        "max_torque": cfg.ripple.max_torque}
     assert client.get("/api/gains").json()["observer"] == {
         "bandwidth": resolve_vector(cfg.observer.bandwidth, 6, "bandwidth").tolist(),
         "max_torque": float(cfg.observer.max_torque), "torque": cfg.observer.torque}
@@ -159,7 +164,7 @@ def test_websocket_trace_selection(client):
             pytest.fail("no trace chunk after selecting a joint")
         tr = msg["trace"]
         assert len(tr["tau_g"]) == len(tr["t"]) == len(tr["tau_f"]) == len(tr["tau_i"]) == len(tr["tau_o"]), "the feed-forward terms ride along"
-        assert len(tr["tau_d"]) == len(tr["t"]), "and the observer's estimate"
+        assert len(tr["tau_d"]) == len(tr["t"]) == len(tr["tau_r"]), "and the observer's estimate and the ripple term"
         assert tr["joint"] == 2 and len(tr["t"]) > 0 and len(tr["q"]) == len(tr["t"]) == len(tr["tau_cmd"])
         assert isinstance(tr["epoch"], float) and tr["epoch"] > 0
         assert tr["q"][-1] == pytest.approx(msg["state"]["q"][2], abs=1e-3)
