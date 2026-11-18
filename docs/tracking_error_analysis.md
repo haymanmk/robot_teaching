@@ -252,6 +252,131 @@ signs of the residual gravity error at the two ends suggest checking the J3 cent
 mass or the link mass in the model rather than scaling further; and a second
 anti-cogging pass, or a position-indexed table on top of it, would address the ripple.
 
+## Ripple table and disturbance observer on J2 and J3 (2026-11-18)
+
+**What changed on the arm.** Two more feed-forward terms exist since the last comparison:
+a position-indexed **ripple table** per joint and direction (`r` in the file names, fitted
+in three rounds the same morning) and the **disturbance observer** (`o`, 2 Hz, `measured`
+torque). `data/ripple_table_calib/` holds a same-day baseline with gravity + friction
+(`gf`) and three configurations after the calibration, `gfr`, `gfro` and `gro` (friction
+feed-forward off, the observer carrying it), for J2 (stroke 1.562 to 1.879 rad) and J3
+(the usual 0.737 to 1.107 rad) at 25, 50 and 100 % speed. The script writes the comparison
+when the folder exists; `rt_summary.csv` has every number.
+
+**About the data.**
+
+* One recording per joint, speed and configuration, 24 in all. The script sorts every file
+  by its *measured* speed (peak commanded velocity against the joint's full speed) and
+  prints a note when the name disagrees; no file does now. (The first pass had a J2
+  baseline named 100 % that was played at 50 %; it has been renamed.)
+* A second J3 baseline at 50 %, since removed, differed from the one kept by 0.07 mrad in
+  RMS, 0.04 in ripple and 0.13 at the dwells: differences of about 0.1 mrad between single
+  recordings are run-to-run scatter.
+* All recordings were made within 35 minutes, baseline first, **except the J2 baseline at
+  100 %**, which was recorded 2.7 hours after the others. Its feedback torque carries a
+  standing +0.47 N·m against +0.29 to +0.32 in the two morning baselines of J2, so part
+  of its mean error may be drift rather than configuration; see finding 3.
+
+![rt_error](../analysis/figures/rt_error.png)
+
+![rt_breakdown](../analysis/figures/rt_breakdown.png)
+
+![rt_ripple](../analysis/figures/rt_ripple.png)
+
+![rt_cycles](../analysis/figures/rt_cycles.png)
+
+![rt_torques_J3](../analysis/figures/rt_torques_J3.png)
+
+![rt_torques_J2](../analysis/figures/rt_torques_J2.png)
+
+**Tracking error, RMS in mrad (spread about the mean in brackets):**
+
+| joint, speed | baseline `gf` | `gfr` | `gfro` | `gro` |
+|---|---|---|---|---|
+| J2, 25 % | 2.19 (1.29) | 1.15 (0.52) | 0.67 (0.39) | 0.71 (0.46) |
+| J2, 50 % | 1.98 (1.17) | 0.98 (0.57) | 0.78 (0.54) | 0.85 (0.66) |
+| J2, 100 % | 2.89 (1.20) | 1.39 (1.14) | 1.24 (1.11) | 1.49 (1.38) |
+| J3, 25 % | 1.32 (1.26) | 0.64 (0.48) | 0.71 (0.40) | 0.72 (0.44) |
+| J3, 50 % | 1.25 (1.22) | 0.64 (0.64) | 0.92 (0.72) | 1.00 (0.81) |
+| J3, 100 % | 1.51 (1.49) | 1.31 (1.31) | 1.58 (1.47) | 1.87 (1.77) |
+
+**The 16 to 24 cycle-per-rad line alone, RMS in mrad** (dwell RMS in brackets):
+
+| joint, speed | baseline `gf` | `gfr` | `gfro` | `gro` |
+|---|---|---|---|---|
+| J2, 25 % | 0.87 (2.53) | 0.28 (0.97) | 0.23 (0.48) | 0.30 (0.47) |
+| J2, 50 % | 0.46 (2.38) | 0.19 (1.11) | 0.20 (0.50) | 0.23 (0.66) |
+| J2, 100 % | 0.15 (3.23) | 0.05 (1.55) | 0.05 (0.77) | 0.05 (1.00) |
+| J3, 25 % | 0.61 (1.95) | 0.24 (0.71) | 0.20 (0.61) | 0.22 (0.61) |
+| J3, 50 % | 0.38 (1.42) | 0.09 (0.46) | 0.08 (0.67) | 0.09 (0.84) |
+| J3, 100 % | 0.16 (0.55) | 0.05 (0.53) | 0.04 (1.03) | 0.04 (1.22) |
+
+1. **The ripple table works, on both joints and at every speed.** It takes 60 to 75 % off
+   the 20 cycle-per-rad line (J3: 0.61 → 0.24 mrad at 25 %, 0.38 → 0.09 at 50 %, 0.16 →
+   0.05 at 100 %; J2: 0.87 → 0.28, 0.46 → 0.19 and 0.15 → 0.05) and its harmonics near 30 and 40 cycles
+   per rad go with it. J2 has the same 20 cycle-per-rad ripple as J3, about 40 % larger.
+   What is left after three rounds at 25 % speed is about a third of the line, more than
+   the 20 % a single round was expected to leave.
+2. **The table also halves the dwell error**, which was not its stated purpose (J3 at
+   25 %: 1.95 → 0.71 mrad; J2: 2.53 → 0.97). The ripple torque does not stop when the joint
+   does: wherever the joint comes to rest, the ripple at that angle is a standing torque
+   the position gain has to hold. In the baseline J3 rested +2.2 mrad off at the lower end
+   and −1.5 at the upper; with the table +0.8 and −0.5. At rest the table supplies the
+   mean of its two direction curves, and that cancels most of it.
+3. **With the table alone the RMS falls by about half at 25 and 50 % speed** on both
+   joints, and by 13 % on J3 at 100 %, where the ripple was a small share to begin with.
+   On J2 at 100 % it falls from 2.89 to 1.39 mrad, but hardly any of that is spread
+   (1.20 → 1.14): it is the mean (−2.63 → −0.79 mrad) and the dwells (3.23 → 1.55). The
+   table moved J2's mean by about 0.8 mrad at 25 and 50 % in back-to-back recordings
+   (−1.77 → −1.02, −1.59 → −0.80), so about half of the 1.8 mrad here fits the table and
+   the rest may be the 2.7 hours between the two recordings. While the joint moves at
+   full speed, the table changes little on either joint.
+4. **The observer removes the offsets that depend on the pose and leaves one that does
+   not.** With it on, the error at the two dwells becomes the same (J2 at 25 %: −1.03 /
+   −0.81 mrad → −0.36 / −0.59) and the dwell RMS on J2 halves again (0.97 → 0.48, 1.11 →
+   0.50, 1.55 → 0.77). But every observer recording, on both joints and at all speeds, has
+   a mean error of **−0.54 to −0.59 mrad**. The motors report less torque than the host
+   commands, by a constant −0.085 N·m on J3 and −0.10 N·m on J2 in all 24 recordings; an
+   observer that takes the report as the applied torque reads that offset as a disturbance
+   and compensates it, and the position loop then holds the offset with −offset / kp of
+   error. On J2, whose mean was −1.0 mrad without the observer, that is still a gain. On
+   J3, whose mean with the table was already +0.05 mrad at 50 and 100 %, it is a loss, and
+   it is why `gfro` has a *higher* RMS than `gfr` there (0.92 against 0.64, 1.58 against
+   1.31).
+5. **Apart from that bias the observer helps at low speed and not at high speed.** The
+   spread about the mean improves at 25 % (J2 0.52 → 0.39, J3 0.48 → 0.40), is unchanged at
+   50 % on J2, and gets worse on J3 at 50 and 100 % (0.64 → 0.72, 1.31 → 1.47). A 2 Hz
+   estimate is about 80 ms behind; a full-speed stroke lasts 0.65 s, so the estimate is
+   out of date for a good part of each stroke.
+6. **Keep the friction feed-forward on.** With it off and the observer carrying the
+   friction (`gro`) the result is the same as `gfro` at 25 % and worse with speed (spread
+   on J3 at 100 %: 1.77 against 1.47; J2: 1.38 against 1.11). The torque figures show why:
+   the feed-forward flips with the commanded velocity at once, the observer's estimate
+   takes a tenth of a cycle and more to follow.
+7. **At full speed what is left is inertia, and neither new term can reach it.** In the
+   100 % recordings with the table, 98 % of the variance of the feedback torque is
+   explained by `J · commanded acceleration + b · velocity`: J = 0.71 kg·m² on J3 and
+   0.80 kg·m² on J2, b about 1.0 to 1.15 N·m·s/rad, 0.70 N·m RMS in all (the baselines
+   give the same: 0.71 and 0.74 kg·m², with the ripple still in the residual). The feedback
+   supplies that through the position error, which is the stroke lag of 1.3 to 1.6 mrad.
+   The inverse-dynamics feed-forward is off in all these recordings and `armature` is
+   still zero; against the URDF's 0.246 kg·m² for J3 the fit suggests an armature near
+   0.46 kg·m².
+
+**Which configuration.** The ripple table on, on both joints, at every speed. Friction
+feed-forward on. The observer on for J2 as it is; for J3 it only pays at slow playback
+until the torque-report offset is taken out.
+
+**Next.** (a) Take the motors' torque-report offset out of what the observer is given: a
+per-joint constant (−0.085 N·m on J3, −0.10 N·m on J2 here), measured as the mean of
+reported minus commanded torque. The −0.57 mrad bias should go, and `gfro` should then
+show its spread as its RMS. (b) Switch on the inertia feed-forward with an armature from
+the fit above and repeat the 100 % recordings; a viscous friction term of about
+1 N·m·s/rad is the second half of that. (c) One more table round at 25 % with the
+observer off, to see whether the remaining third of the ripple line still moves into the
+table. (d) Repeat J2 at 100 % with `gf` and `gfr` back to back, to separate the table's
+share of the 1.8 mrad change in the mean from drift.
+
 ## Method notes
 
 * **Strokes** are the stretches where the commanded speed exceeds 30 % of its peak;

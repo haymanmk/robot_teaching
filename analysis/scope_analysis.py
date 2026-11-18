@@ -19,6 +19,17 @@ re-scaling), it also writes the before/after comparison on the cells both sets s
   after_breakdown.png    dwell, stroke lag and ripple RMS, before beside after
   after_ripple.png       the ripple against joint angle and its order spectrum, before and after
 
+When data/ripple_table_calib/ exists (J2 and J3 with the ripple table `r` and the disturbance
+observer `o`, against a same-day baseline in its baseline/ folder), it writes the comparison
+of the four configurations gf / gfr / gfro / gro per joint and speed:
+
+  rt_error.png           mean / median / std, RMS and spread per joint, speed and configuration
+  rt_breakdown.png       dwell, stroke lag, ripple and the 20 cycle-per-rad line
+  rt_ripple.png          the ripple against joint angle and its order spectrum at 25 % speed
+  rt_cycles.png          the mean motion cycle of every configuration overlaid
+  rt_torques_J*.png      what each feed-forward term and the feedback apply over one cycle
+  rt_summary.csv         the numbers behind these figures
+
 Run with:  uv run --with scipy --with matplotlib python analysis/scope_analysis.py
 """
 from __future__ import annotations
@@ -92,7 +103,7 @@ def prepare(d):
     t = d["t_s"] - d["t_s"][0]
     fs = 1 / np.median(np.diff(t))
     tu = np.arange(0, t[-1], 1 / fs)
-    r = {k: np.interp(tu, t, d[k]) for k in ("err_rad", "q_rad", "q_cmd_rad")}
+    r = {k: np.interp(tu, t, d[k]) for k in d if k not in ("t_s", "name")}
     r.update(t=tu, fs=fs, name=d["name"])
     r["v"] = sosfiltfilt(butter(2, 5, fs=fs, output="sos"), np.gradient(r["q_cmd_rad"], tu))
     vth = V_FRACTION * np.abs(r["v"]).max()
@@ -542,6 +553,257 @@ def compare_after(short, recs):
     fig_after_ripple(short, after, cells)
 
 
+# ----------------------------------------------------------------------------- ripple table / observer
+
+RT = os.path.join(DATA, "ripple_table_calib")
+RT_CONFIGS = ["gf", "gfr", "gfro", "gro"]
+RT_LABEL = {"gf": "baseline: gravity + friction", "gfr": "+ ripple table",
+            "gfro": "+ ripple table + observer", "gro": "ripple table + observer, friction off"}
+RT_COLOR = {"gf": "#8a8984", "gfr": "#2a78d6", "gfro": "#eb6834", "gro": "#1baf7a"}
+RT_OFFSET = dict(zip(RT_CONFIGS, (-0.27, -0.09, 0.09, 0.27)))
+RT_SPEEDS = [25, 50, 100]
+RT_FF = ("tau_g_Nm", "tau_f_Nm", "tau_i_Nm", "tau_o_Nm", "tau_r_Nm")
+
+
+def load_rt():
+    """-> ({joint: {(speed, config): [recording, ...]}}, notes).
+
+    The speed is the *measured* one: the peak commanded velocity against the joint's full
+    speed (the median of v_max / named speed over its files), so a mislabelled file lands in
+    the cell it was actually recorded in, with a note."""
+    raw = []
+    for sub in ("baseline", "after_calib"):
+        for path in sorted(glob.glob(os.path.join(RT, sub, "scope_J*_*.csv"))):
+            m = re.match(r"scope_(J\d)_.*?_(\d+)%_([a-z]+)\.csv$", os.path.basename(path))
+            if not m or m.group(3) not in RT_CONFIGS:
+                continue
+            r = prepare(load(path))
+            r.update(joint=m.group(1), named_speed=int(m.group(2)), config=m.group(3), folder=sub)
+            raw.append(r)
+    sets, notes = {}, []
+    for joint in sorted({r["joint"] for r in raw}):
+        mine = [r for r in raw if r["joint"] == joint]
+        full = np.median([r["v_max"] / (r["named_speed"] / 100) for r in mine])
+        for r in mine:
+            r["speed"] = min(RT_SPEEDS, key=lambda sp: abs(sp - 100 * r["v_max"] / full))
+            if r["speed"] != r["named_speed"]:
+                notes.append(f"{r['folder']}/{r['name']}: named {r['named_speed']} %, but its peak speed "
+                             f"{r['v_max']:.3f} rad/s is {r['speed']} % of {joint}'s {full:.3f} rad/s; used as {r['speed']} %")
+            sets.setdefault(joint, {}).setdefault((r["speed"], r["config"]), []).append(r)
+    return sets, notes
+
+
+def rt_metrics(r):
+    """Error statistics of one recording, in mrad (torques in N·m)."""
+    e = r["err_rad"] * 1e3
+    out = dict(rms=np.sqrt(np.mean(e ** 2)), mean=e.mean(), median=np.median(e), std=e.std())
+    out.update(error_breakdown(r))
+    k, p, _ = order_spectrum(r)
+    band = (k >= 16) & (k <= 24)
+    out["line20"] = np.sqrt(np.sum(p[band]) * (k[1] - k[0])) * 1e3     # RMS of the 16-24 cycle/rad band
+    rest = np.abs(r["v"]) < 0.02 * r["v_max"]
+    qc = r["q_cmd_rad"]
+    lo, hi = rest & (qc < qc.min() + 0.01), rest & (qc > qc.max() - 0.01)
+    out["dwell_low"], out["dwell_high"] = e[lo].mean(), e[hi].mean()
+    out["report_offset"] = float(np.mean(r["tau_meas_Nm"] - r["tau_cmd_Nm"]))
+    return out
+
+
+def rt_axis(ax, ylabel=None):
+    ax.set_xticks(range(len(RT_SPEEDS)), [f"{sp}%" for sp in RT_SPEEDS])
+    ax.set_xlim(-0.55, len(RT_SPEEDS) - 0.45)
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.grid(True, axis="y", which="minor", color=GRID, linestyle="--", linewidth=0.6)
+    ax.tick_params(axis="y", which="minor", length=2)
+    if ylabel:
+        ax.set_ylabel(ylabel)
+
+
+def rt_points(ax, cells, metrics, key, label=True):
+    """One labelled point per recording: x by speed, dodged and coloured by configuration."""
+    top = 0.0
+    for cfg in RT_CONFIGS:
+        first = True
+        for i, sp in enumerate(RT_SPEEDS):
+            recs = cells.get((sp, cfg), [])
+            for n, r in enumerate(recs):
+                v = metrics[id(r)][key]; top = max(top, v)
+                x = i + RT_OFFSET[cfg] + (n - (len(recs) - 1) / 2) * 0.07
+                ax.plot(x, v, "o", color=RT_COLOR[cfg], ms=7, label=RT_LABEL[cfg] if first else None)
+                first = False
+                if label:
+                    ax.text(x, v, f"{v:.2f}\n", ha="center", va="bottom", fontsize=7.5, color=INK2, linespacing=0.6)
+    return top
+
+
+def fig_rt_error(sets, metrics):
+    joints = sorted(sets)
+    fig, axes = plt.subplots(len(joints), 3, figsize=(17, 4.6 * len(joints)), squeeze=False)
+    for row, joint in enumerate(joints):
+        cells = sets[joint]; ax = axes[row, 0]
+        for cfg in RT_CONFIGS:
+            for i, sp in enumerate(RT_SPEEDS):
+                recs = cells.get((sp, cfg), [])
+                for n, r in enumerate(recs):
+                    m = metrics[id(r)]; x = i + RT_OFFSET[cfg] + (n - (len(recs) - 1) / 2) * 0.07
+                    ax.errorbar(x, m["mean"], yerr=m["std"], fmt="o", color=RT_COLOR[cfg], ms=6, capsize=5, lw=1.6)
+                    ax.plot(x, m["median"], "D", color=RT_COLOR[cfg], ms=6, markerfacecolor="#fcfcfb", markeredgewidth=1.5)
+        ax.axhline(0, color=MUTED, lw=0.6)
+        ax.set_title(f"{joint}: mean (dot), median (diamond), whiskers at ±1 std", loc="left")
+        rt_axis(ax, "error (mrad)")
+        for col, (key, title) in enumerate((("rms", "RMS tracking error"), ("std", "spread (std about the mean)")), start=1):
+            ax = axes[row, col]
+            top = rt_points(ax, cells, metrics, key)
+            ax.set_ylim(0, top * 1.22); ax.set_title(f"{joint}: {title}", loc="left"); rt_axis(ax, "mrad")
+    for ax in axes[-1]:
+        ax.set_xlabel("playback speed")
+    handles = [plt.Line2D([], [], marker="o", ls="", ms=7, color=RT_COLOR[c], label=RT_LABEL[c]) for c in RT_CONFIGS]
+    fig.legend(handles=handles, loc="upper right", ncol=4, fontsize=8, bbox_to_anchor=(0.995, 0.965))
+    fig.suptitle("Tracking error with the ripple table and the disturbance observer, against the same-day baseline "
+                 "(short stroke, 2026-11-18)", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(OUT, "rt_error.png"), dpi=150); plt.close(fig)
+
+
+def fig_rt_breakdown(sets, metrics):
+    joints = sorted(sets)
+    parts = [("dwell", "at the dwells"), ("lag", "stroke lag while moving"), ("ripple", "ripple while moving"),
+             ("line20", "the 16 to 24 cycle-per-rad line alone")]
+    fig, axes = plt.subplots(len(joints), len(parts), figsize=(19, 4.6 * len(joints)), squeeze=False)
+    for row, joint in enumerate(joints):
+        for col, (key, title) in enumerate(parts):
+            ax = axes[row, col]
+            top = rt_points(ax, sets[joint], metrics, key)
+            ax.set_ylim(0, top * 1.22); ax.set_title(f"{joint}: {title}", loc="left")
+            rt_axis(ax, "RMS error (mrad)" if col == 0 else None)
+    for ax in axes[-1]:
+        ax.set_xlabel("playback speed")
+    axes[0, 2].legend(loc="upper right", fontsize=8)
+    fig.suptitle("Where the error comes from, per configuration", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(OUT, "rt_breakdown.png"), dpi=150); plt.close(fig)
+
+
+def fig_rt_ripple(sets, metrics, speed=25):
+    joints = sorted(sets)
+    fig, axes = plt.subplots(len(joints), 2, figsize=(15, 4.6 * len(joints)), squeeze=False)
+    for row, joint in enumerate(joints):
+        cells = sets[joint]
+        any_r = next(iter(cells.values()))[0]
+        qgrid = np.arange(any_r["q_cmd_rad"].min() + 0.008, any_r["q_cmd_rad"].max() - 0.008, DQ)
+        for cfg in RT_CONFIGS:
+            recs = cells.get((speed, cfg), [])
+            if not recs:
+                continue
+            r = recs[0]
+            if cfg != "gro":                      # three curves stay readable; gro is in the spectrum
+                fwd, _ = stroke_residuals(r, qgrid)
+                for one in fwd:
+                    axes[row, 0].plot(qgrid, one * 1e3, color=RT_COLOR[cfg], lw=0.4, alpha=0.2)
+                axes[row, 0].plot(qgrid, np.nanmean(fwd, axis=0) * 1e3, color=RT_COLOR[cfg], lw=1.6,
+                                  label=f"{RT_LABEL[cfg]} ({metrics[id(r)]['ripple']:.2f} mrad RMS)")
+            k, p, _ = order_spectrum(r)
+            axes[row, 1].semilogy(k, p * 1e6, color=RT_COLOR[cfg], lw=1.4, label=RT_LABEL[cfg])
+        ax = axes[row, 0]
+        ax.set_title(f"{joint}, {speed}% speed: ripple against joint angle, forward strokes", loc="left")
+        ax.set_ylabel("ripple (mrad)"); ax.legend(loc="lower left", fontsize=8)
+        lim = np.abs(ax.get_ylim()).max(); ax.set_ylim(-lim * 1.35, lim)
+        ax = axes[row, 1]
+        ax.axvspan(16, 24, color=GRID, alpha=0.6, lw=0)
+        ax.set_xlim(0, 60); ax.set_ylim(1e-4, 1e0)
+        ax.set_title(f"{joint}, {speed}% speed: angle-domain spectrum (band: the 16 to 24 cycle-per-rad line)", loc="left")
+        ax.set_ylabel("ripple power (mrad²/(cycle/rad))"); ax.legend(loc="upper right", fontsize=8)
+    axes[-1, 0].set_xlabel("measured joint angle q (rad)"); axes[-1, 1].set_xlabel("order (cycles per rad of joint travel)")
+    fig.suptitle("The position-locked ripple with and without the table", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(OUT, "rt_ripple.png"), dpi=150); plt.close(fig)
+
+
+def cycle_mean(r, x):
+    """Mean of signal x (sampled like r["t"]) over the motion cycles, on normalised time 0..1."""
+    starts = [s[0] for s in r["strokes"] if r["v"][s[0]] > 0]
+    grid = np.linspace(0, 1, 600)
+    cyc = [np.interp(grid, np.linspace(0, 1, b - a), x[a:b]) for a, b in zip(starts[:-1], starts[1:])]
+    return grid, np.mean(cyc, axis=0)
+
+
+def fig_rt_cycles(sets):
+    joints = sorted(sets)
+    fig, axes = plt.subplots(len(joints), len(RT_SPEEDS), figsize=(17, 4.4 * len(joints)), sharex=True, sharey="row", squeeze=False)
+    for row, joint in enumerate(joints):
+        for col, sp in enumerate(RT_SPEEDS):
+            ax = axes[row, col]
+            for cfg in RT_CONFIGS:
+                for n, r in enumerate(sets[joint].get((sp, cfg), [])):
+                    grid, m = cycle_mean(r, r["err_rad"] * 1e3)
+                    ax.plot(grid, m, color=RT_COLOR[cfg], lw=1.5, label=RT_LABEL[cfg] if n == 0 else None)
+            ax.axhline(0, color=MUTED, lw=0.6)
+            ax.set_title(f"{joint}, {sp}% speed", loc="left")
+            if col == 0: ax.set_ylabel("mean error over the cycles (mrad)")
+            if row == len(joints) - 1: ax.set_xlabel("position in the motion cycle (0 = start of forward stroke)")
+    handles = [plt.Line2D([], [], color=RT_COLOR[c], lw=1.5, label=RT_LABEL[c]) for c in RT_CONFIGS]
+    fig.legend(handles=handles, loc="upper right", ncol=4, fontsize=8, bbox_to_anchor=(0.995, 0.995))
+    fig.suptitle("The mean motion cycle of every configuration", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(OUT, "rt_cycles.png"), dpi=150); plt.close(fig)
+
+
+def fig_rt_torques(sets, joint):
+    """One mean cycle of what each feed-forward term and the feedback apply (gravity left out)."""
+    cells = sets[joint]; cfgs = ["gf", "gfr", "gfro", "gro"]; speeds = [25, 100]
+    terms = [("tau_f_Nm", "friction feed-forward", "#eda100"), ("tau_r_Nm", "ripple table", "#2a78d6"),
+             ("tau_o_Nm", "observer", "#eb6834")]
+    fig, axes = plt.subplots(len(speeds), len(cfgs), figsize=(19, 4.3 * len(speeds)), sharex=True, sharey=True, squeeze=False)
+    for row, sp in enumerate(speeds):
+        for col, cfg in enumerate(cfgs):
+            ax = axes[row, col]; recs = cells.get((sp, cfg), [])
+            ax.set_title(f"{joint}, {sp}%: {RT_LABEL[cfg]}", loc="left", fontsize=9)
+            ax.axhline(0, color=MUTED, lw=0.6)
+            if not recs:
+                ax.text(0.5, 0.5, "not recorded", transform=ax.transAxes, ha="center", color=MUTED); continue
+            r = recs[0]
+            fb = r["tau_cmd_Nm"] - sum(r[k] for k in RT_FF)
+            grid, m = cycle_mean(r, fb); ax.plot(grid, m, color=INK, lw=1.0, label="feedback (kp, kd)")
+            for key, lab, color in terms:
+                if np.abs(r[key]).max() > 1e-6:
+                    grid, m = cycle_mean(r, r[key]); ax.plot(grid, m, color=color, lw=1.5, label=lab)
+            if col == 0: ax.set_ylabel("torque (N·m)")
+            if row == len(speeds) - 1: ax.set_xlabel("position in the motion cycle")
+    handles = [plt.Line2D([], [], color=INK, lw=1.0, label="feedback (kp, kd)")] + \
+              [plt.Line2D([], [], color=c, lw=1.5, label=l) for _, l, c in terms]
+    fig.legend(handles=handles, loc="upper right", ncol=4, fontsize=8, bbox_to_anchor=(0.995, 0.995))
+    fig.suptitle(f"{joint}: the torque each term applies over one mean cycle (gravity feed-forward left out)", x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(os.path.join(OUT, f"rt_torques_{joint}.png"), dpi=150); plt.close(fig)
+
+
+def compare_ripple_table():
+    if not os.path.isdir(os.path.join(RT, "baseline")):
+        return
+    sets, notes = load_rt()
+    if not sets:
+        return
+    metrics = {id(r): rt_metrics(r) for cells in sets.values() for recs in cells.values() for r in recs}
+    fig_rt_error(sets, metrics); fig_rt_breakdown(sets, metrics); fig_rt_ripple(sets, metrics); fig_rt_cycles(sets)
+    for joint in sets:
+        fig_rt_torques(sets, joint)
+    cols = ["rms", "mean", "median", "std", "dwell", "lag", "ripple", "line20", "dwell_low", "dwell_high", "report_offset"]
+    with open(os.path.join(OUT, "rt_summary.csv"), "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["joint", "speed_%", "config", "file", "named_speed_%", "v_max_rad_s", "strokes"] +
+                   [c + ("_Nm" if c == "report_offset" else "_mrad") for c in cols])
+        for joint in sorted(sets):
+            for sp in RT_SPEEDS:
+                for cfg in RT_CONFIGS:
+                    for r in sets[joint].get((sp, cfg), []):
+                        m = metrics[id(r)]
+                        w.writerow([joint, sp, cfg, f"{r['folder']}/{r['name']}", r["named_speed"], f"{r['v_max']:.3f}",
+                                    len(r["strokes"])] + [f"{m[c]:.3f}" for c in cols])
+    for note in notes:
+        print("NOTE", note)
+    print(open(os.path.join(OUT, "rt_summary.csv")).read())
+
+
 # ----------------------------------------------------------------------------- main
 
 def main():
@@ -564,6 +826,7 @@ def main():
     peak_order, k0 = fig_spectrum(short, ripple_rms)
     fig_window(short[50, "g"], k0)
     compare_after(short, recs)
+    compare_ripple_table()
 
     with open(os.path.join(OUT, "summary.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
