@@ -347,32 +347,99 @@ when the folder exists; `rt_summary.csv` has every number.
    spread about the mean improves at 25 % (J2 0.52 → 0.39, J3 0.48 → 0.40), is unchanged at
    50 % on J2, and gets worse on J3 at 50 and 100 % (0.64 → 0.72, 1.31 → 1.47). A 2 Hz
    estimate is about 80 ms behind; a full-speed stroke lasts 0.65 s, so the estimate is
-   out of date for a good part of each stroke.
+   out of date for a good part of each stroke. *Revised 2026-11-19, finding 8:* this
+   reading of the raw spread is misleading. With the timing offset of the recording
+   removed, the observer improves the spread at 25 and 50 % on both joints and on J2 at
+   100 %, and is neutral on J3 at 100 %.
 6. **Keep the friction feed-forward on.** With it off and the observer carrying the
    friction (`gro`) the result is the same as `gfro` at 25 % and worse with speed (spread
    on J3 at 100 %: 1.77 against 1.47; J2: 1.38 against 1.11). The torque figures show why:
    the feed-forward flips with the commanded velocity at once, the observer's estimate
    takes a tenth of a cycle and more to follow.
-7. **At full speed what is left is inertia, and neither new term can reach it.** In the
-   100 % recordings with the table, 98 % of the variance of the feedback torque is
-   explained by `J · commanded acceleration + b · velocity`: J = 0.71 kg·m² on J3 and
-   0.80 kg·m² on J2, b about 1.0 to 1.15 N·m·s/rad, 0.70 N·m RMS in all (the baselines
-   give the same: 0.71 and 0.74 kg·m², with the ripple still in the residual). The feedback
-   supplies that through the position error, which is the stroke lag of 1.3 to 1.6 mrad.
-   The inverse-dynamics feed-forward is off in all these recordings and `armature` is
-   still zero; against the URDF's 0.246 kg·m² for J3 the fit suggests an armature near
-   0.46 kg·m².
+7. ***Withdrawn 2026-11-19.*** This finding said that at full speed the feedback torque
+   was inertia, 0.71 kg·m² on J3 and 0.80 on J2, and suggested an armature near
+   0.46 kg·m². That fit used `tau_cmd_Nm`, which is not what the motor applied: it is the
+   host's own evaluation of the MIT law, with the position it read at the start of the
+   tick and a velocity low-passed at 30 ms (`free_drive.velocity_filter_time_constant`).
+   A damping gain of 20 on a velocity that is 30 ms late adds `kd · 0.03 · acceleration`,
+   0.6 kg·m² of apparent inertia, and the stale position adds an apparent viscous term.
+   Fitted to the motor's own report (`tau_meas_Nm`) the same recordings give 0.04 to
+   0.14 kg·m² and a viscous term near 0.1 N·m·s/rad, and the observer's estimate has no
+   acceleration-proportional part (0.03 kg·m²). There is no evidence here for a missing
+   armature.
+8. **At speed, most of the recorded error is a time offset, not a tracking error**
+   (2026-11-19). In every 100 % recording the error is a straight line against the
+   commanded velocity (left panels below): the measured position trails the command by
+   3.5 to 4.5 ms on J3 and 2.5 to 3.5 ms on J2, which explains 77 to 95 % of the error's
+   variance. The motor's reported torque has no matching velocity-proportional part
+   (about 0.1 N·m·s/rad, worth 0.6 ms), so most of the offset is not the joint lagging.
+   The controller records, each tick, the setpoint it has just computed beside the
+   position it read at the start of that tick, a position that predates the setpoint by a
+   tick (2 ms) and the bus latency; the motor has not yet received that setpoint. The
+   error column therefore contains about `−3 to 4 ms × velocity`: 2 mrad at J3's full
+   speed, 0.5 mrad at 25 %.
 
-**Which configuration.** The ripple table on, on both joints, at every speed. Friction
-feed-forward on. The observer on for J2 as it is; for J3 it only pays at slow playback
-until the torque-report offset is taken out.
+![rt_delay](../analysis/figures/rt_delay.png)
+
+   **Spread of the error in mrad with the command shifted by the joint's offset**
+   (3.88 ms on J3, 3.00 ms on J2, the median of each joint's full-speed recordings; raw
+   spread in brackets):
+
+   | joint, speed | baseline `gf` | `gfr` | `gfro` | `gro` |
+   |---|---|---|---|---|
+   | J2, 25 % | 1.30 (1.29) | 0.61 (0.52) | 0.33 (0.39) | 0.41 (0.46) |
+   | J2, 50 % | 1.15 (1.17) | 0.63 (0.57) | 0.35 (0.54) | 0.48 (0.66) |
+   | J2, 100 % | 0.87 (1.20) | 0.83 (1.14) | 0.55 (1.11) | 0.86 (1.38) |
+   | J3, 25 % | 1.24 (1.26) | 0.55 (0.48) | 0.26 (0.40) | 0.30 (0.44) |
+   | J3, 50 % | 1.06 (1.22) | 0.51 (0.64) | 0.29 (0.72) | 0.42 (0.81) |
+   | J3, 100 % | 0.73 (1.49) | 0.50 (1.31) | 0.51 (1.47) | 0.85 (1.77) |
+
+   * **The observer was being under-credited.** With the offset removed it nearly halves
+     the spread at 25 and 50 % on both joints (J3: 0.55 → 0.26 and 0.51 → 0.29) and on J2
+     at 100 % (0.83 → 0.55); on J3 at 100 % it is neutral (0.50 → 0.51). Its one remaining
+     cost is the constant −0.57 mrad bias of finding 4.
+   * **Why the raw numbers said the opposite.** The observer runs show the full offset at
+     every speed (3.5, 3.75, 4.0 ms on J3). The table-only runs show less at low speed
+     (0.75 ms at 25 %, 2.5 ms at 50 %): there the joint runs slightly ahead of where the
+     offset alone would put it, and that real lead cancels part of the recorded offset.
+     The observer removes the lead, the joint follows the command more faithfully, and
+     the raw error then shows the whole offset. A better-tracking joint looked worse.
+   * **The offset is best determined at 100 %** (R² 0.77 to 0.95) and poorly at 25 %
+     without the observer. The table above assumes one offset per joint at all speeds,
+     which is what a sampling and transport delay would be.
+   * **The torque figures now draw the motor's feedback.** They used to draw the host's
+     `tau_cmd_Nm` minus the feed-forward, which at J3's full speed swung ±1.2 N·m in step
+     with the acceleration, 3.4 N·m peak to peak in the baseline against 2.6 and 2.8 with
+     the table and the observer. That swing was the same size in RMS in all three (0.78,
+     0.76, 0.79 N·m) and three quarters of it was the host's damping term on its late
+     velocity. From the motor's report the feedback at full speed stays within about
+     ±0.5 N·m in every configuration, with no acceleration-shaped swing at all.
+   * **The offset does not follow the feedback effort.** The baseline's feedback is about
+     twice as busy as with the table (motor's report minus feed-forward, while moving, at
+     100 %: 0.25 against 0.16 N·m RMS on J3, 0.24 against 0.16 on J2), because without the
+     table the feedback is what answers the ripple. The offsets are 3.75 against 3.50 ms
+     and 2.75 against 2.50 ms, and the configuration with the least feedback torque, table
+     plus observer, has the longest (4.00 and 3.25 ms). A torque that oscillates along the
+     stroke gives an error that oscillates, which is spread; only a torque in step with
+     the velocity gives a lag, and that part of the motor's feedback is 0.05 to
+     0.17 N·m.
+   * **Friction off is still the worst at full speed** (0.85 on both joints), and it
+     trails by another 0.5 ms.
+
+**Which configuration** (revised 2026-11-19). The ripple table on, on both joints, at
+every speed. Friction feed-forward on. The observer on for both joints: it lowers the
+spread everywhere except J3 at 100 %, where it changes nothing, and its −0.57 mrad bias is
+the price until the torque-report offset is taken out.
 
 **Next.** (a) Take the motors' torque-report offset out of what the observer is given: a
 per-joint constant (−0.085 N·m on J3, −0.10 N·m on J2 here), measured as the mean of
 reported minus commanded torque. The −0.57 mrad bias should go, and `gfro` should then
-show its spread as its RMS. (b) Switch on the inertia feed-forward with an armature from
-the fit above and repeat the 100 % recordings; a viscous friction term of about
-1 N·m·s/rad is the second half of that. (c) One more table round at 25 % with the
+show its spread as its RMS. (b) Record the scope's error against the setpoint the motor
+was acting on, not the one just computed: keep the last two setpoints and pair the
+position with the one sent a tick or two earlier, or timestamp the feedback frames. Until
+then, compare recordings at speed by the shifted error in `rt_summary.csv`
+(`std_aligned`). The same goes for `tau_cmd_Nm`: use `tau_meas_Nm` for anything that
+depends on phase. (c) One more table round at 25 % with the
 observer off, to see whether the remaining third of the ripple line still moves into the
 table. (d) Repeat J2 at 100 % with `gf` and `gfr` back to back, to separate the table's
 share of the 1.8 mrad change in the mean from drift.

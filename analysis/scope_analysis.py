@@ -28,6 +28,8 @@ of the four configurations gf / gfr / gfro / gro per joint and speed:
   rt_ripple.png          the ripple against joint angle and its order spectrum at 25 % speed
   rt_cycles.png          the mean motion cycle of every configuration overlaid
   rt_torques_J*.png      what each feed-forward term and the feedback apply over one cycle
+  rt_delay.png           the error against commanded velocity, the time offset it implies, and
+                         the spread once the command is shifted by that offset
   rt_summary.csv         the numbers behind these figures
 
 Run with:  uv run --with scipy --with matplotlib python analysis/scope_analysis.py
@@ -606,7 +608,34 @@ def rt_metrics(r):
     lo, hi = rest & (qc < qc.min() + 0.01), rest & (qc > qc.max() - 0.01)
     out["dwell_low"], out["dwell_high"] = e[lo].mean(), e[hi].mean()
     out["report_offset"] = float(np.mean(r["tau_meas_Nm"] - r["tau_cmd_Nm"]))
+    out["delay_ms"], _ = best_delay(r)
     return out
+
+
+def best_delay(r, grid_ms=np.arange(0, 12.01, 0.25)):
+    """The time by which the measured position trails the command, and the error without it.
+
+    The command is shifted later in steps of 0.25 ms; the shift with the smallest error spread
+    is the offset. Returns (offset in ms, error in mrad against the shifted command)."""
+    t, q, qc = r["t"], r["q_rad"], r["q_cmd_rad"]
+    shifted = lambda ms: (q - np.interp(t - ms * 1e-3, t, qc)) * 1e3
+    ms = min(np.atleast_1d(grid_ms), key=lambda m: shifted(m).std())
+    return float(ms), shifted(ms)
+
+
+def align_to_joint_delay(sets, metrics):
+    """Per joint, take the median offset of its full-speed recordings (where the offset is
+    best determined) and add to every recording's metrics the error against the command
+    shifted by that one value. -> {joint: offset in ms}"""
+    common = {}
+    for joint, cells in sets.items():
+        fast = [metrics[id(r)]["delay_ms"] for (sp, _), recs in cells.items() if sp == max(RT_SPEEDS) for r in recs]
+        common[joint] = float(np.median(fast)) if fast else 0.0
+        for recs in cells.values():
+            for r in recs:
+                _, aligned = best_delay(r, grid_ms=[common[joint]])
+                metrics[id(r)].update(std_aligned=aligned.std(), rms_aligned=np.sqrt(np.mean(aligned ** 2)))
+    return common
 
 
 def rt_axis(ax, ylabel=None):
@@ -749,7 +778,7 @@ def fig_rt_cycles(sets):
 
 
 def fig_rt_torques(sets, joint):
-    """One mean cycle of what each feed-forward term and the feedback apply (gravity left out)."""
+    """One mean cycle of what each feed-forward term and the motor's feedback apply (gravity left out)."""
     cells = sets[joint]; cfgs = ["gf", "gfr", "gfro", "gro"]; speeds = [25, 100]
     terms = [("tau_f_Nm", "friction feed-forward", "#eda100"), ("tau_r_Nm", "ripple table", "#2a78d6"),
              ("tau_o_Nm", "observer", "#eb6834")]
@@ -762,19 +791,57 @@ def fig_rt_torques(sets, joint):
             if not recs:
                 ax.text(0.5, 0.5, "not recorded", transform=ax.transAxes, ha="center", color=MUTED); continue
             r = recs[0]
-            fb = r["tau_cmd_Nm"] - sum(r[k] for k in RT_FF)
-            grid, m = cycle_mean(r, fb); ax.plot(grid, m, color=INK, lw=1.0, label="feedback (kp, kd)")
+            # the motor's report, not tau_cmd_Nm: that is the host's evaluation of the MIT law with
+            # a stale position and a velocity filtered at 30 ms, and swings several times as much
+            fb = r["tau_meas_Nm"] - sum(r[k] for k in RT_FF)
+            grid, m = cycle_mean(r, fb); ax.plot(grid, m, color=INK, lw=1.0)
             for key, lab, color in terms:
                 if np.abs(r[key]).max() > 1e-6:
                     grid, m = cycle_mean(r, r[key]); ax.plot(grid, m, color=color, lw=1.5, label=lab)
             if col == 0: ax.set_ylabel("torque (N·m)")
             if row == len(speeds) - 1: ax.set_xlabel("position in the motion cycle")
-    handles = [plt.Line2D([], [], color=INK, lw=1.0, label="feedback (kp, kd)")] + \
+    handles = [plt.Line2D([], [], color=INK, lw=1.0, label="feedback: reported torque minus feed-forward")] + \
               [plt.Line2D([], [], color=c, lw=1.5, label=l) for _, l, c in terms]
     fig.legend(handles=handles, loc="upper right", ncol=4, fontsize=8, bbox_to_anchor=(0.995, 0.995))
     fig.suptitle(f"{joint}: the torque each term applies over one mean cycle (gravity feed-forward left out)", x=0.02, ha="left", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(os.path.join(OUT, f"rt_torques_{joint}.png"), dpi=150); plt.close(fig)
+
+
+def fig_rt_delay(sets, metrics, common):
+    """Is the error at speed a time offset? Error against commanded velocity at 100 %, the
+    offset per recording, and the spread once the command is shifted by it."""
+    joints = sorted(sets)
+    fig, axes = plt.subplots(len(joints), 3, figsize=(17, 4.6 * len(joints)), squeeze=False)
+    for row, joint in enumerate(joints):
+        cells = sets[joint]; ax = axes[row, 0]
+        for cfg in RT_CONFIGS:
+            for r in cells.get((100, cfg), []):
+                v, e = r["v"], r["err_rad"] * 1e3
+                edges = np.linspace(-r["v_max"], r["v_max"], 25); idx = np.digitize(v, edges)
+                vb = [v[idx == i].mean() for i in range(1, len(edges)) if (idx == i).sum() > 30]
+                eb = [e[idx == i].mean() for i in range(1, len(edges)) if (idx == i).sum() > 30]
+                ax.plot(vb, eb, "-o", color=RT_COLOR[cfg], ms=3, lw=1.3)
+        ax.axhline(0, color=MUTED, lw=0.6); ax.axvline(0, color=MUTED, lw=0.6)
+        ax.set_title(f"{joint}, 100% speed: mean error against commanded velocity", loc="left")
+        ax.set_ylabel("error (mrad)")
+        ax = axes[row, 1]
+        top = rt_points(ax, cells, metrics, "delay_ms")
+        ax.set_ylim(0, top * 1.22); rt_axis(ax, "ms")
+        ax.set_title(f"{joint}: time by which the position trails the command", loc="left")
+        ax = axes[row, 2]
+        top = rt_points(ax, cells, metrics, "std_aligned")
+        ax.set_ylim(0, top * 1.22); rt_axis(ax, "mrad")
+        ax.set_title(f"{joint}: spread with the command shifted by {common[joint]:.2f} ms", loc="left")
+    axes[-1, 0].set_xlabel("commanded velocity (rad/s)")
+    for ax in axes[-1, 1:]:
+        ax.set_xlabel("playback speed")
+    handles = [plt.Line2D([], [], marker="o", ls="", ms=7, color=RT_COLOR[c], label=RT_LABEL[c]) for c in RT_CONFIGS]
+    fig.legend(handles=handles, loc="upper right", ncol=4, fontsize=8, bbox_to_anchor=(0.995, 0.965))
+    fig.suptitle("The error at speed is mostly a time offset between the command and the measured position",
+                 x=0.02, ha="left", fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(OUT, "rt_delay.png"), dpi=150); plt.close(fig)
 
 
 def compare_ripple_table():
@@ -784,14 +851,17 @@ def compare_ripple_table():
     if not sets:
         return
     metrics = {id(r): rt_metrics(r) for cells in sets.values() for recs in cells.values() for r in recs}
+    common = align_to_joint_delay(sets, metrics)
     fig_rt_error(sets, metrics); fig_rt_breakdown(sets, metrics); fig_rt_ripple(sets, metrics); fig_rt_cycles(sets)
+    fig_rt_delay(sets, metrics, common)
     for joint in sets:
         fig_rt_torques(sets, joint)
-    cols = ["rms", "mean", "median", "std", "dwell", "lag", "ripple", "line20", "dwell_low", "dwell_high", "report_offset"]
+    cols = ["rms", "mean", "median", "std", "dwell", "lag", "ripple", "line20", "dwell_low", "dwell_high",
+            "std_aligned", "rms_aligned", "delay_ms", "report_offset"]
     with open(os.path.join(OUT, "rt_summary.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["joint", "speed_%", "config", "file", "named_speed_%", "v_max_rad_s", "strokes"] +
-                   [c + ("_Nm" if c == "report_offset" else "_mrad") for c in cols])
+                   [c if c == "delay_ms" else c + ("_Nm" if c == "report_offset" else "_mrad") for c in cols])
         for joint in sorted(sets):
             for sp in RT_SPEEDS:
                 for cfg in RT_CONFIGS:
@@ -801,6 +871,7 @@ def compare_ripple_table():
                                     len(r["strokes"])] + [f"{m[c]:.3f}" for c in cols])
     for note in notes:
         print("NOTE", note)
+    print("offset used per joint (ms):", common)
     print(open(os.path.join(OUT, "rt_summary.csv")).read())
 
 
