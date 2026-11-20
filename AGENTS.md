@@ -19,5 +19,6 @@ its own.
 - The teach pendant and the offline plotter (`plot.html`) are plain HTML, CSS and JavaScript
   under `src/robot_teaching/server/static/`, served by the FastAPI app with no build step. To
   see a change, run `uv run robot-teaching serve --backend sim` and open http://127.0.0.1:8000/
-  (the plotter: http://127.0.0.1:8000/plot, or open `plot.html` from disk).
+  (the plotter: http://127.0.0.1:8000/plot, or open `tools/plotter.html` from disk, which
+  opens `plot.html` where it lives).
 - `README.md` describes the behaviour of the whole system; keep it in step with what you change.

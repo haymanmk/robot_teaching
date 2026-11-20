@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0; url=../src/robot_teaching/server/static/plot.html">
+<title>Scope recording plotter</title>
+<link rel="icon" href="data:,">
+<style>body { font: 14px/1.4 system-ui, sans-serif; background: #0f1115; color: #e6e8ee; padding: 24px; } a { color: #6ea8fe; }</style>
+</head>
+<body>
+<!-- The plotter itself lives with the teach pendant's files in src/robot_teaching/server/static/,
+     because it shares the stylesheet, the strip drawing, the spectrum maths and the CSV reader
+     with the live scope and the server serves it from there at /plot. This file is a doorstep:
+     open it from disk and it opens the plotter from there. -->
+<p>Opening the <a href="../src/robot_teaching/server/static/plot.html">scope recording plotter</a>…</p>
+<script>location.replace("../src/robot_teaching/server/static/plot.html");</script>
+</body>
+</html>

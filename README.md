@@ -189,8 +189,9 @@ chunk of each message; its `epoch` identifies the server run, so a new value mea
 
 **Offline plotter.** http://127.0.0.1:8000/plot (the **Plot…** button of the Scope card) shows a
 recorded CSV file with the same three strips and spectrum as the live scope, drawn by the same
-code. The page needs no server: `src/robot_teaching/server/static/plot.html` can be opened
-straight from disk, and the file is read by the browser, never uploaded. **Open CSV…** (or a
+code. The page needs no server: open `tools/plotter.html` from disk (a doorstep that opens the
+page, which lives with the pendant's files as `src/robot_teaching/server/static/plot.html`),
+and the file is read by the browser, never uploaded. **Open CSV…** (or a
 drop anywhere on the page) loads one or more recordings; a recording that spans a server restart
 holds more than one *run* (the `run` column changes and `t_s` starts again from zero) and each
 run is listed on its own. The strip at the top shows the whole run's tracking error with the
