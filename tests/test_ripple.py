@@ -10,7 +10,7 @@ from robot_teaching.cli import main
 from robot_teaching.controller import Mode, TeachController
 from robot_teaching.planning import plan_program
 from robot_teaching.program import Program, TaughtPoint
-from robot_teaching.ripple import Recording, RippleMap, RippleTable, fit_table, read_recording
+from robot_teaching.ripple import Recording, RippleMap, RippleSine, RippleTable, fit_table, read_recording
 
 from conftest import L_POSE
 
@@ -43,6 +43,21 @@ def test_table_interpolates_blends_the_directions_and_is_zero_outside():
             RippleTable(**{**dict(start=1.0, step=0.1, forward=[0.0, 1.0, 0.0], reverse=[0.0, 0.5, 0.0]), **bad})
 
 
+def test_table_with_a_sinusoid_continues_as_it_outside_its_range():
+    sine = RippleSine(2.0, forward=[0.5, 0.0], reverse=[0.0, 0.3])       # one cycle per 0.5 rad
+    assert sine.per_revolution == pytest.approx(4.0 * np.pi)
+    assert sine.amplitude("forward") == pytest.approx(0.5) and sine.amplitude("reverse") == pytest.approx(0.3)
+    t = RippleTable(1.0, 0.1, forward=[0.0, 1.0, 0.0], reverse=[0.3, -0.5, 0.3], sine=sine)
+    assert t.torque(1.1, 1.0) == pytest.approx(1.0) and t.torque(1.1, -1.0) == pytest.approx(-0.5), "inside: the table"
+    assert t.torque(1.0, 1.0) == pytest.approx(0.0) and t.torque(1.2, -1.0) == pytest.approx(0.3), "its ends included"
+    assert t.torque(0.625, 1.0) == pytest.approx(0.5) and t.torque(0.625, -1.0) == pytest.approx(0.0, abs=1e-12)
+    assert t.torque(2.0, -1.0) == pytest.approx(0.3) and t.torque(2.0, 0.0) == pytest.approx(0.15), "blended alike"
+    assert t.torque(-2.875, 1.0) == pytest.approx(0.5), "however far"
+    for bad in (dict(cycles=0.0), dict(forward=[0.5]), dict(reverse=[0.0, np.inf])):
+        with pytest.raises(ValueError):
+            RippleSine(**{**dict(cycles=2.0, forward=[0.5, 0.0], reverse=[0.0, 0.3]), **bad})
+
+
 def test_map_gives_a_torque_only_to_the_joints_with_a_table_and_survives_a_file(tmp_path):
     table = RippleTable(0.9, 0.05, forward=[0.0, 0.4, 0.4, 0.0], reverse=[0.0, 0.2, 0.2, 0.0])
     m = RippleMap(6, {J3: table})
@@ -63,6 +78,17 @@ def test_map_gives_a_torque_only_to_the_joints_with_a_table_and_survives_a_file(
         RippleMap.load(path, 6)
     path.write_text("elbow:\n  start: 0.9\n")
     with pytest.raises(ValueError, match="joint label"):
+        RippleMap.load(path, 6)
+    # A table with a sinusoid: it is stored and read back with it.
+    table.sine = RippleSine(20.053523, [0.31, -0.2], [0.25, 0.1])
+    assert RippleMap(6, {J3: table}).describe() == "J3 0.900..1.050 rad (beyond: sinusoid, 20.05 cycles/rad)"
+    RippleMap(6, {J3: table, 0: RippleTable(0.0, 0.1, [0.0, 0.1], [0.0, 0.1])}).save(path)
+    back = RippleMap.load(path, 6)
+    assert back.tables[0].sine is None and back.tables[J3].sine.cycles == pytest.approx(20.053523)
+    assert np.allclose(back.tables[J3].sine.forward, [0.31, -0.2]) and np.allclose(back.tables[J3].sine.reverse, [0.25, 0.1])
+    assert back.tables[J3].torque(3.0, 1.0) == pytest.approx(table.torque(3.0, 1.0)) != 0.0
+    path.write_text(path.read_text().replace("cycles_per_rad", "cycles"))
+    with pytest.raises(ValueError, match="cycles_per_rad"):
         RippleMap.load(path, 6)
 
 
@@ -100,16 +126,59 @@ def test_fit_recovers_the_ripple_of_each_direction_and_leaves_the_trend_out():
         assert abs(np.mean(got)) < 0.02
         assert fit.rms[name] == pytest.approx(np.std(want), rel=0.1) and fit.explained[name] > 0.95
         assert fit.samples[name] > 4000
-    assert t.forward[0] == 0.0 and t.reverse[-1] == 0.0, "the ends come down to zero"
-    assert abs(t.forward[1]) < 0.2 * np.max(np.abs(t.forward)), "smoothly"
+    # The ripple's fundamental is found as a sinusoid, and the ends come down to it.
+    s = t.sine
+    assert s is fit.sine and s.cycles == pytest.approx(CYCLES, abs=0.02) and 0.9 < fit.sine_share < 1.0
+    assert np.allclose(s.forward, [0.5, 0.2], atol=0.03) and np.allclose(s.reverse, [0.5, -0.2], atol=0.03)
+    assert t.forward[0] == pytest.approx(s.curves(t.start)[0]) and t.reverse[-1] == pytest.approx(s.curves(t.stop)[1])
+    assert abs(t.forward[1] - s.curves(t.start + t.step)[0]) < 0.05, "smoothly"
+
+    # Without it they come down to zero.
+    plain = fit_table([_strokes(seed=0), _strokes(seed=1)], sine=False)
+    assert plain.table.sine is None and plain.sine is None and plain.sine_share == 0.0
+    assert plain.table.forward[0] == 0.0 and plain.table.reverse[-1] == 0.0
+    assert abs(plain.table.forward[1]) < 0.2 * np.max(np.abs(plain.table.forward))
+    assert np.allclose(plain.table.forward[20:-20], t.forward[20:-20]), "away from the ends the table is the same"
 
 
-def test_fit_leaves_angles_it_has_not_seen_at_zero():
+def _fundamental(q, direction):
+    phase = 2.0 * np.pi * CYCLES * np.asarray(q)
+    return 0.5 * np.sin(phase) + 0.2 * direction * np.cos(phase)
+
+
+def test_fit_gives_angles_it_has_not_seen_the_sinusoid():
     low, high = _strokes(0.6, 0.9), _strokes(1.1, 1.4, seed=1)
     t = fit_table([low, high]).table
     assert t.start == pytest.approx(0.6, abs=0.01) and t.stop == pytest.approx(1.4, abs=0.01)
-    assert t.torque(1.0, 1.0) == 0.0 and t.torque(1.0, -1.0) == 0.0, "nothing recorded between the two strokes"
     assert abs(t.torque(0.75, 1.0) - _truth(0.75, 1.0)) < 0.1 and abs(t.torque(1.25, -1.0) - _truth(1.25, -1.0)) < 0.1
+    # Between the two strokes and beyond them nothing was recorded: the ripple's fundamental.
+    for x in (np.arange(0.93, 1.07, 0.003), np.arange(0.2, 0.58, 0.003), np.arange(1.42, 2.0, 0.003)):
+        for direction in (1.0, -1.0):
+            got = np.array([t.torque(v, direction) for v in x])
+            assert np.max(np.abs(got - _fundamental(x, direction))) < 0.06
+    every = np.arange(0.2, 2.0, 0.0005)
+    assert np.max(np.abs(np.diff([t.torque(v, 1.0) for v in every]))) < 0.06, "no step where the table ends"
+
+    # The frequency can be given instead of searched for.
+    given = fit_table([low, high], sine_cycles=CYCLES).table
+    assert given.sine.cycles == CYCLES and abs(given.torque(1.8, 1.0) - _fundamental(1.8, 1.0)) < 0.05
+
+    # Without the sinusoid those angles get nothing.
+    t = fit_table([low, high], sine=False).table
+    assert t.torque(1.0, 1.0) == 0.0 and t.torque(1.0, -1.0) == 0.0 and t.torque(1.6, 1.0) == 0.0
+    assert abs(t.torque(0.75, 1.0) - _truth(0.75, 1.0)) < 0.1
+
+
+def test_fit_keeps_a_sinusoid_only_where_the_ripple_is_one():
+    noise = _strokes()
+    noise.tau = noise.tau - _truth(noise.q, np.sign(np.gradient(noise.q_cmd)))    # the trend and the noise alone
+    fit = fit_table([noise])
+    assert fit.sine is not None and fit.sine_share < 0.3 and fit.table.sine is None
+    assert fit.table.forward[0] == 0.0 and fit.table.torque(2.0, 1.0) == 0.0, "zero outside, as without one"
+    short = fit_table([_strokes(1.0, 1.1)])                                       # two cycles: too few to tell
+    assert short.sine is None and short.table.sine is None
+    with pytest.raises(ValueError, match="sine_cycles"):
+        fit_table([_strokes()], sine_cycles=0.0)
 
 
 def test_fit_refuses_what_it_cannot_use():
@@ -159,6 +228,18 @@ def test_ripple_fit_command_writes_the_joint_and_keeps_the_others(tmp_path, caps
     assert main(["ripple-fit", str(tmp_path / "j3.csv"), "--out", str(out)]) == 0
     assert "replaced the table of J3" in capsys.readouterr().out
     assert main(["ripple-fit", str(tmp_path / "nothing.csv"), "--out", str(out)]) == 1
+    # The sinusoid: found, stored and used beyond the recorded 0.6 to 1.4 rad, unless it is refused.
+    assert "sinusoid 19.8" in text and "continues as it outside its range" in text
+    assert abs(m.tables[J3].torque(2.0, 1.0) - _fundamental(2.0, 1.0)) < 0.06
+    capsys.readouterr()
+    assert main(["ripple-fit", str(tmp_path / "j3.csv"), "--out", str(out), "--sine-per-rev", "124"]) == 0
+    assert "(124.0 per revolution)" in capsys.readouterr().out
+    assert RippleMap.load(out, 6).tables[J3].sine.per_revolution == pytest.approx(124.0)
+    assert main(["ripple-fit", str(tmp_path / "j3.csv"), "--out", str(out), "--no-sine"]) == 0
+    assert "sinusoid" not in capsys.readouterr().out
+    m = RippleMap.load(out, 6)
+    assert m.tables[J3].sine is None and m.tables[J3].torque(2.0, 1.0) == 0.0
+    assert main(["ripple-fit", str(tmp_path / "j3.csv"), "--out", str(out), "--sine-per-rev", "0"]) == 1
 
 
 # ── the term in the controller ─────────────────────────────────────────────────────────────

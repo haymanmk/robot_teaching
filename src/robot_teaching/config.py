@@ -148,7 +148,8 @@ class RippleConfig:
 
     ``file`` is the YAML with the tables, relative to the configuration file's directory; it
     is written by ``robot-teaching ripple-fit`` from scope recordings and read at start-up
-    and by Reload gains. No file: no tables. The table is read at the measured angle plus
+    and by Reload gains. No file: no tables. A table may carry a sinusoid of the joint angle,
+    which is the term at the angles the table does not cover. The table is read at the measured angle plus
     ``lead_time`` × the commanded velocity, which covers the time from the position sample to
     the moment the torque acts. Its forward and reverse curves are blended with
     ``tanh(commanded velocity / velocity_scale)``; at rest the term is their mean.

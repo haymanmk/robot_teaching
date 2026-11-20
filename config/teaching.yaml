@@ -122,7 +122,9 @@ ripple:
   # ±max_torque per joint; in free drive it fades out. A joint without a table gets nothing.
   # The tables are learned from scope recordings and belong to one arm:
   #   robot-teaching ripple-fit data/scope_J3_slow.csv
-  # writes the table of the recorded joint into `file` (README, "Ripple feed-forward").
+  # writes the table of the recorded joint into `file` (README, "Ripple feed-forward"), and
+  # with it the sinusoid of the joint angle closest to the ripple: at the angles the recording
+  # does not cover the term is that sinusoid (`ripple-fit --no-sine` for a table without one).
   # Reloadable with the gains: Reload gains reads the file again.
   file: ripple.local.yaml   # relative to this file's directory; git ignores *.local.yaml
   lead_time: 0.002       # s, the table is read at the measured angle + lead_time × commanded

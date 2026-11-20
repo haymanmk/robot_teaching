@@ -16,6 +16,12 @@ plus whatever the feedback still had to add.
 
 Only what changes quickly with the angle goes into the table (faster than about one cycle per
 ``4 × smooth`` rad); the slow part (gravity error, friction) is left to the other terms.
+
+A table only knows the angles the joint crossed while it was recorded, and the arm cannot
+always be swept over a joint's whole range. The ripple is close to one sinusoid of the joint
+angle, though (on J2 and J3 about 20.05 cycles per rad, 126 per revolution, which reproduces
+70 to 85 % of their tables), so the fit also finds that sinusoid (:class:`RippleSine`) and
+the table continues as it wherever nothing was recorded: outside its range and in its gaps.
 """
 
 from __future__ import annotations
@@ -32,17 +38,56 @@ DIRECTIONS = ("forward", "reverse")      # the joint moving in the positive / th
 
 
 @dataclass
+class RippleSine:
+    """The ripple as one sinusoid of the joint angle, per direction of travel:
+    ``a · sin(2π · cycles · q) + b · cos(2π · cycles · q)`` N·m, with ``(a, b)`` in
+    ``forward`` and ``reverse`` and ``cycles`` in cycles per rad."""
+
+    cycles: float
+    forward: np.ndarray
+    reverse: np.ndarray
+
+    def __post_init__(self) -> None:
+        self.cycles = float(self.cycles)
+        self.forward = np.asarray(self.forward, dtype=float).reshape(-1)
+        self.reverse = np.asarray(self.reverse, dtype=float).reshape(-1)
+        if not (np.isfinite(self.cycles) and self.cycles > 0.0):
+            raise ValueError("ripple sinusoid: cycles_per_rad must be positive")
+        if len(self.forward) != 2 or len(self.reverse) != 2:
+            raise ValueError("ripple sinusoid: forward and reverse are two values each, [sin, cos]")
+        if not (np.all(np.isfinite(self.forward)) and np.all(np.isfinite(self.reverse))):
+            raise ValueError("ripple sinusoid: values must be finite")
+
+    @property
+    def per_revolution(self) -> float:
+        """Cycles per revolution of the joint."""
+        return 2.0 * np.pi * self.cycles
+
+    def amplitude(self, direction: str) -> float:
+        """The amplitude of one direction's sinusoid, N·m."""
+        return float(np.hypot(*getattr(self, direction)))
+
+    def curves(self, q):
+        """The forward and the reverse torque at angle(s) ``q``."""
+        phase = 2.0 * np.pi * self.cycles * np.asarray(q, dtype=float)
+        s, c = np.sin(phase), np.cos(phase)
+        return self.forward[0] * s + self.forward[1] * c, self.reverse[0] * s + self.reverse[1] * c
+
+
+@dataclass
 class RippleTable:
     """The ripple torque of one joint against its angle, one curve per direction of travel.
 
     ``forward[k]`` and ``reverse[k]`` are the torque to add (N·m) at ``start + k · step`` rad;
-    between two values it is interpolated, outside the table it is zero.
+    between two values it is interpolated. Outside the table the torque is that of ``sine``,
+    and zero without one.
     """
 
     start: float
     step: float
     forward: np.ndarray
     reverse: np.ndarray
+    sine: RippleSine | None = None
 
     def __post_init__(self) -> None:
         self.start, self.step = float(self.start), float(self.step)
@@ -64,8 +109,11 @@ class RippleTable:
     def torque(self, q: float, direction: float = 0.0) -> float:
         """The torque to add at angle ``q``. ``direction`` runs from −1 (moving in the negative
         direction) to +1 and blends the two curves; 0, at rest, is their mean."""
-        fwd = np.interp(q, self.angles, self.forward, left=0.0, right=0.0)
-        rev = np.interp(q, self.angles, self.reverse, left=0.0, right=0.0)
+        if self.sine is not None and not (self.angles[0] <= q <= self.angles[-1]):
+            fwd, rev = self.sine.curves(q)
+        else:
+            fwd = np.interp(q, self.angles, self.forward, left=0.0, right=0.0)
+            rev = np.interp(q, self.angles, self.reverse, left=0.0, right=0.0)
         return float(0.5 * ((1.0 + direction) * fwd + (1.0 - direction) * rev))
 
 
@@ -95,7 +143,9 @@ class RippleMap:
         """One line for the log: which joints have a table and over which angles."""
         if not self.tables:
             return "no table"
-        return ", ".join(f"J{j + 1} {t.start:.3f}..{t.stop:.3f} rad" for j, t in sorted(self.tables.items()))
+        return ", ".join(f"J{j + 1} {t.start:.3f}..{t.stop:.3f} rad"
+                         + (f" (beyond: sinusoid, {t.sine.cycles:.2f} cycles/rad)" if t.sine else "")
+                         for j, t in sorted(self.tables.items()))
 
     @classmethod
     def load(cls, path: str | Path | None, n: int) -> "RippleMap":
@@ -109,20 +159,33 @@ class RippleMap:
         for key, entry in data.items():
             joint = _joint_index(key)
             try:
-                tables[joint] = RippleTable(entry["start"], entry["step"], entry["forward"], entry["reverse"])
-            except (KeyError, TypeError) as e:
-                raise ValueError(f"{path}: {key} needs start, step, forward and reverse") from e
+                sine = entry.get("sine")
+                if sine is not None:
+                    sine = RippleSine(sine["cycles_per_rad"], sine["forward"], sine["reverse"])
+                tables[joint] = RippleTable(entry["start"], entry["step"], entry["forward"], entry["reverse"], sine)
+            except (KeyError, TypeError, AttributeError) as e:
+                raise ValueError(f"{path}: {key} needs start, step, forward and reverse "
+                                 "(and its sine, if any, cycles_per_rad, forward and reverse)") from e
         return cls(n, tables)
 
     def save(self, path: str | Path) -> None:
         """Write the tables as YAML, one entry per joint (``J1`` is the first joint)."""
-        data = {f"J{j + 1}": {"start": round(t.start, 6), "step": round(t.step, 6),
-                              "forward": [round(float(v), 4) + 0.0 for v in t.forward],      # + 0.0: no "-0.0"
-                              "reverse": [round(float(v), 4) + 0.0 for v in t.reverse]}
-                for j, t in sorted(self.tables.items())}
+        def values(v):
+            return [round(float(x), 4) + 0.0 for x in v]                                    # + 0.0: no "-0.0"
+
+        data = {}
+        for j, t in sorted(self.tables.items()):
+            entry = {"start": round(t.start, 6), "step": round(t.step, 6),
+                     "forward": values(t.forward), "reverse": values(t.reverse)}
+            if t.sine is not None:
+                entry["sine"] = {"cycles_per_rad": round(t.sine.cycles, 6),
+                                 "forward": values(t.sine.forward), "reverse": values(t.sine.reverse)}
+            data[f"J{j + 1}"] = entry
         header = ("# Ripple feed-forward tables, written by `robot-teaching ripple-fit` (see README).\n"
                   "# Per joint: the torque to add (N·m) at start + k·step rad, for the joint moving in the\n"
-                  "# positive (forward) and the negative (reverse) direction. Measured on one arm.\n")
+                  "# positive (forward) and the negative (reverse) direction. Measured on one arm.\n"
+                  "# sine, where present, is the torque outside the table: per direction\n"
+                  "# a·sin(2π·cycles_per_rad·q) + b·cos(2π·cycles_per_rad·q) with [a, b].\n")
         Path(path).write_text(header + yaml.safe_dump(data, default_flow_style=None, sort_keys=False, width=110))
 
 
@@ -179,6 +242,8 @@ class RippleFit:
     explained: dict[str, float]      # share of the motor torque's fast variation the table reproduces
     samples: dict[str, int]          # samples used
     speed: float                     # rad/s, the fastest cruise speed among the recordings
+    sine: RippleSine | None = None   # the best sinusoid found; the table uses it only if table.sine is set
+    sine_share: float = 0.0          # share of the measured ripple (both directions) that sinusoid reproduces
 
 
 def _trend(x: np.ndarray, y: np.ndarray, w: np.ndarray, sigma: float) -> np.ndarray:
@@ -216,16 +281,62 @@ def _fill_and_taper(values: np.ndarray, valid: np.ndarray, taper_bins: int, max_
     return out * np.where(known, window, 0.0)
 
 
+def _fit_sine(angles: np.ndarray, values: list[np.ndarray], weights: list[np.ndarray],
+              cycles: float | None, lowest: float, highest: float) -> tuple[RippleSine, float] | None:
+    """The sinusoid of the angle closest to ``values`` (one curve per direction, ``weights``
+    zero where a bin is unknown): one frequency for both directions, searched between
+    ``lowest`` and ``highest`` cycles per rad unless ``cycles`` gives it, and an amplitude and
+    phase per direction. Returns it with the share of the curves' weighted power it
+    reproduces, or None where there is too little to fit one (fewer than three cycles)."""
+    known = [w > 0.0 for w in weights]
+    total = sum(float(np.sum(w[m] * y[m] ** 2)) for y, w, m in zip(values, weights, known))
+    seen = angles[known[0] | known[1]]
+    span = float(np.ptp(seen)) if len(seen) else 0.0
+    if total <= 0.0 or span <= 0.0:
+        return None
+
+    def solve(f: float) -> tuple[list[np.ndarray], float]:
+        phase = 2.0 * np.pi * f * angles
+        basis = np.column_stack([np.sin(phase), np.cos(phase)])
+        coefs, left = [], 0.0
+        for y, w, m in zip(values, weights, known):
+            if m.sum() < 3:
+                coefs.append(np.zeros(2))
+                continue
+            root = np.sqrt(w[m])
+            c = np.linalg.lstsq(basis[m] * root[:, None], y[m] * root, rcond=None)[0]
+            coefs.append(c)
+            left += float(np.sum(w[m] * (y[m] - basis[m] @ c) ** 2))
+        return coefs, left
+
+    if cycles is None:
+        if highest <= lowest:
+            return None
+        fine = 0.1 / span                     # cycles per rad: a tenth of the width of a spectral line
+        cycles = min(np.arange(lowest, highest, fine), key=lambda f: solve(f)[1])
+        cycles = min(np.linspace(cycles - fine, cycles + fine, 81), key=lambda f: solve(f)[1])
+    if cycles * span < 3.0:
+        return None
+    coefs, left = solve(float(cycles))
+    return RippleSine(float(cycles), coefs[0], coefs[1]), 1.0 - left / total
+
+
 def fit_table(recordings: Iterable[Recording], step: float = 0.002, smooth: float = 0.05,
-              speed_fraction: float = 0.5, taper: float = 0.01, min_count: int = 5) -> RippleFit:
+              speed_fraction: float = 0.5, taper: float = 0.01, min_count: int = 5,
+              sine: bool = True, sine_cycles: float | None = None, sine_share: float = 0.5) -> RippleFit:
     """Learn the ripple table of one joint from recordings of it moving back and forth.
 
     Per recording and direction, the motor torque of the samples moving faster than
     ``speed_fraction`` of the recording's top commanded speed is averaged in bins of ``step``
     rad of measured angle. A smooth trend along the angle (width ``smooth`` rad) is removed,
     which leaves the part that follows the angle quickly; the recordings are then averaged.
-    Bins with fewer than ``min_count`` samples are unknown: the table is zero there and
-    comes to zero over ``taper`` rad next to them.
+    Bins with fewer than ``min_count`` samples are unknown.
+
+    With ``sine``, the sinusoid of the angle closest to what was measured is fitted as well
+    (its frequency searched, or ``sine_cycles`` cycles per rad). If it reproduces at least
+    ``sine_share`` of the measured ripple, the table takes its value in the unknown bins,
+    passes into it over ``taper`` rad next to them, and continues as it outside its range.
+    Otherwise, and without ``sine``, the table is zero there and comes to zero over ``taper``.
 
     Record slowly (a quarter speed or less): the faster the joint moves, the more the
     feedback torque lags the ripple it answers and the less of it one pass captures.
@@ -264,9 +375,8 @@ def fit_table(recordings: Iterable[Recording], step: float = 0.002, smooth: floa
     i0, i1 = int(np.rint(every_q.min() / step)), int(np.rint(every_q.max() / step))
     nb = i1 - i0 + 1
     angles = (i0 + np.arange(nb)) * step
-    curves, valids = [], []
-    rms, explained, samples = {}, {}, {}
-    for d, name in enumerate(DIRECTIONS):
+    means, counts, resids = [], [], []
+    for d in range(2):
         num, den, resid = np.zeros(nb), np.zeros(nb), []
         for q, tau in parts[d]:
             idx = np.rint(q / step).astype(int) - i0
@@ -280,9 +390,27 @@ def fit_table(recordings: Iterable[Recording], step: float = 0.002, smooth: floa
             den[ok] += count[ok]
             used = ok[idx]
             resid.append((idx[used], q[used], tau[used] - np.interp(q[used], angles[ok], trend)))
-        valid = den > 0.0
-        curve = _fill_and_taper(np.where(valid, num / np.where(valid, den, 1.0), 0.0), valid,
-                                int(round(taper / step)))
+        means.append(np.where(den > 0.0, num / np.where(den > 0.0, den, 1.0), 0.0))
+        counts.append(den)
+        resids.append(resid)
+
+    best, share = None, 0.0
+    if sine:
+        if sine_cycles is not None and not (np.isfinite(sine_cycles) and sine_cycles > 0.0):
+            raise ValueError("sine_cycles must be positive")
+        found = _fit_sine(angles, means, counts, sine_cycles, 1.0 / (4.0 * smooth), 1.0 / (8.0 * step))
+        if found is not None:
+            best, share = found
+    used = best if best is not None and share >= sine_share else None
+    base = used.curves(angles) if used is not None else (np.zeros(nb), np.zeros(nb))
+
+    curves, valids = [], []
+    rms, explained, samples = {}, {}, {}
+    for d, name in enumerate(DIRECTIONS):
+        valid, resid = counts[d] > 0.0, resids[d]
+        # What the sinusoid leaves over goes to zero next to the unknown bins: the curve itself
+        # then meets the sinusoid there (zero, without one).
+        curve = base[d] + _fill_and_taper(np.where(valid, means[d] - base[d], 0.0), valid, int(round(taper / step)))
         curves.append(curve)
         valids.append(valid)
         samples[name] = int(sum(len(r[0]) for r in resid))
@@ -297,5 +425,5 @@ def fit_table(recordings: Iterable[Recording], step: float = 0.002, smooth: floa
     if len(covered) < 2:
         raise ValueError("too few samples to build a table: record more strokes, or lower min_count")
     a, b = covered[0], covered[-1] + 1
-    table = RippleTable(angles[a], step, curves[0][a:b], curves[1][a:b])
-    return RippleFit(joint, table, rms, explained, samples, top)
+    table = RippleTable(angles[a], step, curves[0][a:b], curves[1][a:b], used)
+    return RippleFit(joint, table, rms, explained, samples, top, best, float(share))

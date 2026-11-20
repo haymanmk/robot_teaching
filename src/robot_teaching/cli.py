@@ -81,7 +81,10 @@ def _ripple_fit(args: argparse.Namespace) -> int:
         return 1
     try:
         recordings = [read_recording(p) for p in args.recordings]
-        fit = fit_table(recordings, step=args.step, smooth=args.smooth)
+        if args.sine_per_rev is not None and args.sine_per_rev <= 0.0:
+            raise ValueError("--sine-per-rev must be positive")
+        fit = fit_table(recordings, step=args.step, smooth=args.smooth, sine=not args.no_sine,
+                        sine_cycles=None if args.sine_per_rev is None else args.sine_per_rev / (2.0 * np.pi))
         tables = RippleMap.load(out, 64)                  # the other joints' tables are kept
     except (OSError, ValueError) as e:
         print(f"ripple-fit failed: {e}", file=sys.stderr)
@@ -95,6 +98,17 @@ def _ripple_fit(args: argparse.Namespace) -> int:
               f"it reproduces {100.0 * fit.explained[name]:.0f} % of the motor torque's fast variation")
         if peak > float(cfg.ripple.max_torque):
             print(f"           the peak is above ripple.max_torque ({cfg.ripple.max_torque:g} N·m): the term will be clipped")
+    if fit.sine is not None:
+        s = fit.sine
+        print(f"  sinusoid {s.cycles:.2f} cycles per rad ({s.per_revolution:.1f} per revolution), amplitude "
+              f"{s.amplitude('forward'):.3f} N·m forward and {s.amplitude('reverse'):.3f} N·m reverse; "
+              f"it reproduces {100.0 * fit.sine_share:.0f} % of the measured ripple")
+        if t.sine is not None:
+            print("           the table continues as it outside its range and where nothing was recorded")
+        else:
+            print("           too little to rely on: the table is zero outside its range and where nothing was recorded")
+    elif not args.no_sine:
+        print("  no sinusoid (too short a stretch to fit one): the table is zero outside its range")
     if args.dry_run:
         print("dry run: nothing written")
         return 0
@@ -141,12 +155,19 @@ def main(argv: list[str] | None = None) -> int:
                        description="Learn the ripple feed-forward table of one joint from recordings made with the "
                                    "scope's Record button while that joint moves back and forth slowly, and store it "
                                    "in the ripple file of the configuration. A recording made with the table in use "
-                                   "gives the next, better table.")
+                                   "gives the next, better table. The fit also finds the sinusoid of the joint "
+                                   "angle closest to the ripple; the table continues as that sinusoid at the "
+                                   "angles the recordings do not cover.")
     r.add_argument("recordings", nargs="+", help="scope CSV files of one joint")
     r.add_argument("--out", default=None, help="file to write (default: ripple.file of the configuration)")
     r.add_argument("--step", type=float, default=0.002, help="rad between table values (default 0.002)")
     r.add_argument("--smooth", type=float, default=0.05,
                    help="rad; variation slower than about a cycle per 4 x this is left out of the table (default 0.05)")
+    r.add_argument("--no-sine", action="store_true",
+                   help="no sinusoid: the table is zero at the angles the recordings do not cover")
+    r.add_argument("--sine-per-rev", type=float, default=None,
+                   help="the sinusoid's cycles per revolution of the joint, where it is known (e.g. 126); "
+                        "default: searched for")
     r.add_argument("--dry-run", action="store_true", help="print the result without writing the file")
     r.add_argument("--config", default=None)
     r.set_defaults(func=_ripple_fit)

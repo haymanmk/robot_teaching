@@ -38,8 +38,8 @@ robot_teaching/
 │   ├── model.py                    Pinocchio model wrapper: FK, IK, Jacobian, g(q), M(q), C(q, q̇), limits
 │   ├── observer.py                 disturbance observers: the joint torque the model does not explain
 │                                   (the controller's fourth feed-forward term; docs/disturbance_observer.md)
-│   ├── ripple.py                   ripple feed-forward: a torque table per joint angle and direction, and
-│                                   learning it from scope recordings (the fifth term)
+│   ├── ripple.py                   ripple feed-forward: a torque table per joint angle and direction, a
+│                                   sinusoid beyond it, and learning both from scope recordings (the fifth term)
 │   ├── program.py                  TaughtPoint / Program / ProgramStore (JSON)
 │   ├── planning/                   quintic profiles, joint spline, Cartesian line, program → trajectory
 │   ├── controller.py               500 Hz state machine: HOLD / FREE_DRIVE / PLAYBACK / DISABLED
@@ -331,10 +331,20 @@ the curves are blended with the commanded velocity, and at rest the term is thei
 table is read at the measured angle. The term acts in hold and playback and fades out in free
 drive; a joint without a table gets nothing, so the switch is safe to leave on.
 
+A table is only measured at the angles the joint crossed while it was recorded, and a joint
+cannot always be swept over its whole range without the arm meeting itself or the base. The
+ripple is close to one sinusoid of the joint angle, though, so the fit also finds that
+sinusoid, and the table continues as it at every angle that was not recorded: outside its
+range and in its gaps. On J2 and J3 the sinusoid has 126 cycles per revolution (20.05 per
+rad) and 0.4 to 0.6 N·m of amplitude, and it is the larger part of the ripple, not all of it:
+the table remains the better answer wherever it was measured.
+
 The table is learned from the arm, one joint at a time:
 
 1. Teach a program that moves only that joint back and forth over the angles you want
-   covered, and loop it. Leave **ripple** and **observer** unticked for the first table.
+   covered, or over as much of them as the arm can reach without a collision (half a radian
+   is enough for the sinusoid), and loop it. Leave **ripple** and **observer** unticked for
+   the first table.
 2. Select the joint in the scope, press **Record**, play the program at 25 % speed or slower
    for three or four strokes each way, and **Stop**. Slow matters: the faster the joint
    moves, the more the feedback torque lags the ripple it is answering.
@@ -342,6 +352,9 @@ The table is learned from the arm, one joint at a time:
    joint may be given). It prints the angles covered, the size of the table and how much of
    the motor torque's fast variation it reproduces, and writes the joint's table into
    `config/ripple.local.yaml`, keeping the other joints' tables. `--dry-run` only prints.
+   It also prints the sinusoid: its cycles per rad and per revolution, its amplitude per
+   direction and the share of the measured ripple it reproduces. `--sine-per-rev 126` gives
+   the frequency instead of searching for it, `--no-sine` leaves the sinusoid out.
 4. Press **Reload gains**, tick **ripple** and play again. The ripple in the error strip
    should be smaller.
 5. Record again at the same slow speed, now with **ripple** ticked, and run `ripple-fit` on
@@ -352,8 +365,17 @@ The table is learned from the arm, one joint at a time:
 How it is built: the motor torque of the moving samples is averaged in 2 mrad bins of
 measured angle per direction, and a smooth trend along the angle (gravity, friction) is
 removed, so only what changes faster than about a cycle per 0.2 rad goes into the table; the
-slow part stays with the other terms. Outside the recorded angles the table is zero and it
-comes down to zero smoothly at its ends. The observer is told about the term, as it is about
+slow part stays with the other terms. The sinusoid is fitted to those bin averages: one
+frequency for both directions, searched between 5 and 62 cycles per rad, and an amplitude and
+a phase per direction. It is kept if it reproduces at least half of the measured ripple over
+three cycles or more; the table then passes into it over 10 mrad at its ends and next to its
+gaps, and the file stores it beside the table (`sine`). Otherwise, and with `--no-sine`, the
+table is zero outside the recorded angles and comes down to zero smoothly at its ends. How
+far the sinusoid can be trusted away from the recording rests on its frequency: an error of
+0.05 cycles per rad is 18° of phase after one radian, which leaves about 30 % of the
+sinusoid uncancelled. The searched frequency came out between 125.9 and 126.4 per
+revolution on every recording tried, which points to a whole 126; giving it with
+`--sine-per-rev` removes that error. The observer is told about the term, as it is about
 the friction term, so the two do not cancel the ripple twice. A table belongs to one arm
 (`*.local.yaml` is not under version control); learn it again after the motor's zero or its
 anti-cogging calibration has changed.
@@ -364,6 +386,13 @@ last table leaves 0.07 of 0.72 mrad at twice that speed; the observer alone leav
 the real arm it has not been tried yet. Fitted to the J3 recordings already taken, the table
 is about 0.5 N·m RMS per direction, and two recordings made minutes apart give tables that
 agree to within 9 %.
+
+The sinusoid was checked on the J2 and J3 recordings in `data/ripple_table_calib/` by
+fitting on the lowest 30 % or 50 % of each stroke only and comparing what the table then
+gives over the rest (up to 1.2 rad beyond what it saw) with the table fitted on the whole
+stroke: it reproduces 64 to 96 % of that table's variance, and no less at the far end than
+near the cut. That is a comparison of torques between fits; the tracking error at angles
+covered by the sinusoid alone has not been recorded on the arm.
 
 **Calibrate on your arm before trusting the defaults:** the gripper `open_position`
 (the vendor examples use 5.0 rad), the free-drive gains (start with one joint enabled,
@@ -397,7 +426,7 @@ the controller state machine on the simulator (hold, jog, free-drive lock/follow
 playback tracking and gripper events, stop ramp, e-stop, error fallback), the disturbance
 observers against known pushes, friction and a hidden armature in the simulator, the observer
 feed-forward term in hold, playback and free drive, the ripple table (its fit on synthetic
-strokes, the term in the controller, and the record, fit and replay loop on a simulated arm
+strokes, its sinusoid at the angles they do not cover, the term in the controller, and the record, fit and replay loop on a simulated arm
 with a ripple), and the HTTP / WebSocket API. The tests
 load `config/teaching.yaml` alone: values in a `teaching.local.yaml` tuned for the real arm
 do not apply to the simulator. `tests/test_dsp.py` runs the scope's spectrum maths under Node
@@ -418,6 +447,7 @@ not installed.
   the friction the feed-forward does not cover as well as any push: there is no
   external-force estimate yet, and no admittance control. `docs/disturbance_observer.md`
   lists the order of work.
-* The ripple feed-forward has only been run in the simulator. On the arm, a table covers the
-  angles that were recorded and nothing else, and how well a table learned at one speed and
+* The ripple feed-forward has only been run in the simulator. On the arm, a table is measured
+  at the angles that were recorded only; beyond them it is the fitted sinusoid, which has
+  been compared with recordings but not run on the arm there, and how well a table learned at one speed and
   load holds at another is not measured yet.
